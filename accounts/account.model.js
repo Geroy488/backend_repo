@@ -2,6 +2,7 @@ const { DataTypes } = require('sequelize');
 
 module.exports = model;
 
+// file: account.model.js
 function model(sequelize) {
     const attributes = {
         email: { type: DataTypes.STRING, allowNull: false },
@@ -18,23 +19,28 @@ function model(sequelize) {
         passwordReset: { type: DataTypes.DATE },
         created: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
         updated: { type: DataTypes.DATE },
+
+        // 👇 ADD THIS HERE
+        status: { type: DataTypes.ENUM("Active", "Inactive"), defaultValue: 'Active' },
+
         isVerified: {
             type: DataTypes.VIRTUAL,
             get() { return !!(this.verified || this.passwordReset); }
+        },
+        isActive: {
+            type: DataTypes.VIRTUAL,
+            get() { return this.status === 'Active'; }
         }
     };
 
     const options = {
-        // disable default timestamp fields (createdAt and updatedAt)
-        timestamps: false, 
+        timestamps: false,
         defaultScope: {
-            // exclude password hash by default
             attributes: { exclude: ['passwordHash'] }
         },
         scopes: {
-            // include hash with this scope
-            withHash: { attributes: {}, }
-        }        
+            withHash: { attributes: {} }
+        }
     };
 
     return sequelize.define('account', attributes, options);
