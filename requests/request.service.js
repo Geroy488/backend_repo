@@ -101,7 +101,6 @@ async function update(id, params) {
     return await getById(request.id);
 }
 
-// ✅ Create a new request (allows inactive employees)
 async function create(params) {
     const { type, items, status, employeeId } = params;
 
@@ -125,27 +124,18 @@ async function create(params) {
         employeeId: employee.id
     });
 
-    // 2️⃣ Assign workflow to an Admin employee
-    const adminEmployee = await db.Employee.findOne({
-        include: [
-            { model: db.Account, as: 'account', where: { role: 'Admin' } }
-        ]
+    // 2️⃣ Automatically create a workflow for this request
+    const workflow = await db.Workflow.create({
+        type: request.type,  // matches frontend workflow type
+        details: `Review ${request.type} request #${request.id} from Employee ${employee.employeeId}`,
+        employeeId: employee.id,   // assign to the employee who created request
+        requestId: request.id,     // link workflow to request
+        status: 'Pending'
     });
 
-    if (!adminEmployee) {
-        console.warn('⚠️ No admin employee found. Workflow not created.');
-    } else {
-       // 2️⃣ Create workflow for the requesting employee
-        await db.Workflow.create({
-            type: 'Request Approval',
-            details: `Review ${request.type} request #${request.id} from ${employee.employeeId}.`,
-            employeeId: employee.id,   // 👈 belongs to the employee who made the request
-            requestId: request.id,
-            status: 'Pending'
-        });
-    }
+    console.log('Workflow created:', workflow.toJSON()); // ✅ now it logs properly
 
-    // Return full request with relations
+    // 3️⃣ Return full request with relations
     return await getById(request.id);
 }
 

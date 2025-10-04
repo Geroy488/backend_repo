@@ -4,7 +4,7 @@
         "port": 3306,
         "user": "root",
         "password": "root",
-        "database": "node-mysql-signup-verification-api1"
+        "database": "node-mysql-signup-verification-api"
     },
     "secret": "280062ee-c5f2-43d1-bafb-ecf1f7901952",
     "emailFrom": "info@node-mysql-signup-verification-api.com",
