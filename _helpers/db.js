@@ -70,7 +70,7 @@ async function initialize() {
   db.Employee.belongsTo(db.Position, { foreignKey: 'positionId', as: 'position' });
     
   //await sequelize.sync({ alter: true });
-
+  
   // ===============================
     // ✅ Sync database (safe for production)
     // ===============================
