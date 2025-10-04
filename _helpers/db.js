@@ -1,6 +1,6 @@
 //const config = require('config.json');
+//const mysql = require('mysql2/promise');
 require('dotenv').config();
-const mysql = require('mysql2/promise');
 const { Sequelize, DataTypes } = require('sequelize');
 
 const db = {};
@@ -9,7 +9,7 @@ initialize();
 
 async function initialize() {
   const host = process.env.DB_HOST;
-  const port = process.env.DB_PORT || 3306;
+  const port = process.env.DB_PORT || 5432;
   const user = process.env.DB_USER;
   const password = process.env.DB_PASSWORD;
   const database = process.env.DB_NAME;
@@ -18,12 +18,24 @@ async function initialize() {
       console.log(`🔗 Connecting to database ${database} at ${host}:${port}...`);
 
       // Initialize Sequelize
-      const sequelize = new Sequelize(database, user, password, {
-        host,
-        port,
-        dialect: 'mysql',
-        logging: false, // turn on for debugging
-  });
+     const sequelize = new Sequelize(
+  process.env.DB_NAME,
+  process.env.DB_USER,
+  process.env.DB_PASSWORD,
+  {
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 5432,
+    dialect: 'postgres',
+    dialectOptions: {
+      ssl: {
+        require: true,        // ✅ force SSL
+        rejectUnauthorized: false // ✅ allow self-signed certs
+      }
+    },
+    logging: false, // optional
+  }
+);
+
 
   // init models
   db.Account = require('../accounts/account.model')(sequelize, DataTypes);
