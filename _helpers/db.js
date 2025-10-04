@@ -68,7 +68,9 @@ async function initialize() {
   // Position ↔ Employee
   db.Position.hasMany(db.Employee, { foreignKey: 'positionId', as: 'employees', onDelete: 'SET NULL' });
   db.Employee.belongsTo(db.Position, { foreignKey: 'positionId', as: 'position' });
-    await sequelize.sync({ alter: true });
+    
+  //await sequelize.sync({ alter: true });
+
   // ===============================
     // ✅ Sync database (safe for production)
     // ===============================
@@ -86,9 +88,6 @@ async function initialize() {
     process.exit(1); // stop server if DB fails
   }
 }
-
-// Initialize immediately
-initialize();
 
 module.exports = db;
 
