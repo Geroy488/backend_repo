@@ -14,6 +14,8 @@
     router.post('/', authorize(Role.Admin), createSchema, create);
     router.put('/:id', authorize(Role.Admin), updateSchema, update);
     router.delete('/:id', authorize(Role.Admin), _delete);
+    
+    console.log("✅ Employees controller loaded");
 
     module.exports = router;
    

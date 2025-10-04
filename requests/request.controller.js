@@ -10,6 +10,8 @@ router.get('/:id', getById);
 router.post('/', create);
 router.put('/:id', update);
 
+console.log("✅ Requests controller loaded");
+
 module.exports = router;
 
 // ------------------ ROUTE HANDLERS ------------------

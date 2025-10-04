@@ -15,10 +15,7 @@ async function initialize() {
   const database = process.env.DB_NAME;
 
   try {
-      // Connect to MySQL server
-      const connection = await mysql.createConnection({ host, port, user, password });
-      await connection.query(`CREATE DATABASE IF NOT EXISTS \`${database}\`;`);
-      console.log(`✅ Database '${database}' is ready.`);
+      console.log(`🔗 Connecting to database ${database} at ${host}:${port}...`);
 
       // Initialize Sequelize
       const sequelize = new Sequelize(database, user, password, {

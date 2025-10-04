@@ -25,6 +25,8 @@ router.put('/:id', authorize(), updateSchema, update);
 // file: accounts/accounts.controller.js
 //router.get('/available', authorize(Role.Admin), getAvailable);
 
+console.log("✅ Accounts controller loaded");
+
 module.exports = router;
 
 function getAvailable(req, res, next) {

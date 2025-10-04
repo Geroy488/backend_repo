@@ -10,6 +10,8 @@ router.get('/:id', getById);                          // get workflow by id
 router.post('/', create);                             // add new workflow
 router.put('/:id', update);                           // update workflow
 
+console.log("✅ Workflows controller loaded");
+
 module.exports = router;
 
 // ------------------ ROUTE HANDLERS ------------------
