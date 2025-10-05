@@ -18,11 +18,18 @@ async function initialize() {
 
     // ✅ Initialize Sequelize for PostgreSQL
     const sequelize = new Sequelize(database, user, password, {
-      host,
-      port,
-      dialect: 'postgres',
-      logging: false, // set to console.log for debugging
-    });
+    host,
+    port,
+    dialect: 'postgres',
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false, // needed for Render
+      },
+    },
+    logging: false,
+  });
+
 
     // ===============================
     // 🔹 Initialize Models
