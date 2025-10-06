@@ -84,12 +84,13 @@ async function register(params, origin) {
     }
 
     const account = new db.Account({
-        ...params,
-        role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
-        status: 'Active',      
-        verificationToken: randomTokenString(),
-        passwordHash: await hash(params.password)
+    ...params,
+    role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
+    status: 'Active',
+    verified: Date.now(), // ✅ auto-verify new accounts
+    passwordHash: await hash(params.password)
     });
+
 
     await account.save();
     sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
