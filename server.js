@@ -26,7 +26,7 @@ app.use('/positions', require('./positions/positions.controller'));
 app.use('/api-docs', require('_helpers/swagger'));
 
 app.use(cors({
-    origin: ['https://your-frontend-domain.com'], // or frontend dev URL
+    origin: ['https://frontend-repo-cwfsbohms-charizms-projects.vercel.app'], // or frontend dev URL
     credentials: true // ✅ allows sending cookies
 }));
 
