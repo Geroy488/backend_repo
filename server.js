@@ -9,6 +9,7 @@ const employeesController = require('./employees/employees.controller');
 
 const allowedOrigins = [
   'https://frontend-repo-inky.vercel.app',
+  'https://frontend-repo-g.vercel.app',
   'http://localhost:4200' // for local development
 ];
 
