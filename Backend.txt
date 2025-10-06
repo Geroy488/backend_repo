@@ -1,0 +1,3169 @@
+
+================================================================================
+File: accounts\account.model.js
+Size: 1.67 kB
+================================================================================
+
+const { DataTypes } = require('sequelize');
+
+module.exports = model;
+
+// file: account.model.js
+function model(sequelize) {
+    const attributes = {
+        email: { type: DataTypes.STRING, allowNull: false },
+        passwordHash: { type: DataTypes.STRING, allowNull: false },
+        title: { type: DataTypes.STRING, allowNull: false },
+        firstName: { type: DataTypes.STRING, allowNull: false },
+        lastName: { type: DataTypes.STRING, allowNull: false },
+        acceptTerms: { type: DataTypes.BOOLEAN },
+        role: { type: DataTypes.STRING, allowNull: false },
+        verificationToken: { type: DataTypes.STRING },
+        verified: { type: DataTypes.DATE },
+        resetToken: { type: DataTypes.STRING },
+        resetTokenExpires: { type: DataTypes.DATE },
+        passwordReset: { type: DataTypes.DATE },
+        created: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+        updated: { type: DataTypes.DATE },
+
+        // 👇 ADD THIS HERE
+        status: { type: DataTypes.ENUM("Active", "Inactive"), defaultValue: 'Active' },
+
+        isVerified: {
+            type: DataTypes.VIRTUAL,
+            get() { return !!(this.verified || this.passwordReset); }
+        },
+        isActive: {
+            type: DataTypes.VIRTUAL,
+            get() { return this.status === 'Active'; }
+        }
+    };
+
+    const options = {
+        timestamps: false,
+        defaultScope: {
+            attributes: { exclude: ['passwordHash'] }
+        },
+        scopes: {
+            withHash: { attributes: {} }
+        }
+    };
+
+    return sequelize.define('account', attributes, options);
+}
+
+================================================================================
+File: accounts\account.service.js
+Size: 11.5 kB
+================================================================================
+
+﻿const config = require('config.json');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const crypto = require("crypto");
+const { Op } = require('sequelize');
+const sendEmail = require('_helpers/send-email');
+const db = require('_helpers/db');
+const Role = require('_helpers/role');
+
+module.exports = {
+    authenticate,
+    refreshToken,
+    revokeToken,
+    register,
+    verifyEmail,
+    forgotPassword,
+    validateResetToken,
+    resetPassword,
+    getAll,
+    getById,
+    create,
+    update,
+    getAvailable   // 👈 added
+};
+
+// ------------------ AUTHENTICATION ------------------
+async function authenticate({ email, password, ipAddress }) {
+    const account = await db.Account.scope('withHash').findOne({ where: { email } });
+
+   if (!account || !account.isVerified || account.status !== 'Active' || !(await bcrypt.compare(password, account.passwordHash))) {
+    throw account.status !== 'Active' ? 'Account is inactive' : 'Email or password is incorrect';
+   }
+    
+    // 🚫 Block inactive accounts
+    if (account.status !== 'Active') {
+        throw 'Account is inactive';
+    }
+
+    const jwtToken = generateJwtToken(account);
+    const refreshToken = generateRefreshToken(account, ipAddress);
+
+    await refreshToken.save();
+
+    return {
+        ...basicDetails(account),
+        jwtToken,
+        refreshToken: refreshToken.token
+    };
+}
+
+async function refreshToken({ token, ipAddress }) {
+    const refreshToken = await getRefreshToken(token);
+    const account = await refreshToken.getAccount();
+
+    const newRefreshToken = generateRefreshToken(account, ipAddress);
+    refreshToken.revoked = Date.now();
+    refreshToken.revokedByIp = ipAddress;
+    refreshToken.replacedByToken = newRefreshToken.token;
+
+    await refreshToken.save();
+    await newRefreshToken.save();
+
+    return {
+        ...basicDetails(account),
+        jwtToken: generateJwtToken(account),
+        refreshToken: newRefreshToken.token
+    };
+}
+
+async function revokeToken({ token, ipAddress }) {
+    const refreshToken = await getRefreshToken(token);
+    refreshToken.revoked = Date.now();
+    refreshToken.revokedByIp = ipAddress;
+    await refreshToken.save();
+}
+
+// ------------------ ACCOUNT MANAGEMENT ------------------
+
+// REGISTER (user self-register)
+async function register(params, origin) {
+    if (await db.Account.findOne({ where: { email: params.email } })) {
+        sendAlreadyRegisteredEmail(params.email, origin).catch(err => console.error(err));
+        return;
+    }
+
+    const account = new db.Account({
+        ...params,
+        role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
+        status: 'Active',      
+        verificationToken: randomTokenString(),
+        passwordHash: await hash(params.password)
+    });
+
+    await account.save();
+    sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
+
+    return basicDetails(account);
+}
+
+async function verifyEmail({ token }) {
+    const account = await db.Account.findOne({ where: { verificationToken: token } });
+    if (!account) throw 'Verification failed';
+
+    account.verified = Date.now();
+    account.verificationToken = null;
+    await account.save();
+}
+
+async function forgotPassword({ email }, origin) {
+    const account = await db.Account.findOne({ where: { email } });
+    if (!account) return;
+
+    account.resetToken = randomTokenString();
+    account.resetTokenExpires = new Date(Date.now() + 24*60*60*1000);
+    await account.save();
+
+    await sendPasswordResetEmail(account, origin);
+}
+
+async function validateResetToken({ token }) {
+    const account = await db.Account.findOne({
+        where: {
+            resetToken: token,
+            resetTokenExpires: { [Op.gt]: Date.now() }
+        }
+    });
+    if (!account) throw 'Invalid token';
+    return account;
+}
+
+async function resetPassword({ token, password }) {
+    const account = await validateResetToken({ token });
+    account.passwordHash = await hash(password);
+    account.passwordReset = Date.now();
+    account.resetToken = null;
+    await account.save();
+}
+
+async function getAll() {
+    const accounts = await db.Account.findAll({
+        include: [
+            {
+                model: db.Employee,
+                as: 'employees',   // must match association
+                attributes: ['employeeId', 'positionId', 'status'],
+                 include: [
+                    {
+                        model: db.Position,
+                        as: 'position',
+                        attributes: ['id', 'name'] // ✅ pull position name here
+                    }
+                ]
+            }
+        ]
+    });
+
+    return accounts.map(acc => ({
+        id: acc.id,
+        title: acc.title,
+        firstName: acc.firstName,
+        lastName: acc.lastName,
+        email: acc.email,
+        role: acc.role,
+        status: acc.status,
+        created: acc.created,
+        updated: acc.updated,
+        isVerified: acc.isVerified,
+        // Handle plural employees
+        employees: acc.employees ? acc.employees.map(emp => ({
+            employeeId: emp.employeeId,
+            position: emp.position ? emp.position.name : null, // ✅ from relation
+            status: emp.status
+        })) : []
+    }));
+}
+
+
+async function getById(id) {
+    const account = await getAccount(id);
+    return basicDetails(account);
+}
+
+// CREATE (admin creating account)
+async function create(params) {
+    if (await db.Account.findOne({ where: { email: params.email } })) {
+        throw 'Email "' + params.email + '" is already registered';
+    }
+
+    const account = new db.Account({
+        ...params,
+        verified: Date.now(),              // Admin-created accounts are verified automatically
+        passwordHash: await hash(params.password)
+        // Use status exactly as provided
+    });
+
+    await account.save();
+
+    // Only create employee if status is Active
+    //if (account.status === 'Active') {
+    //await ensureEmployeeExists(account);
+    //}
+
+    return basicDetails(account);
+}
+
+// UPDATE
+async function update(id, params) {
+    const account = await getAccount(id);
+
+    // prevent overwriting password if not provided
+    if (!params.password) {
+        delete params.password;
+    } else {
+        params.passwordHash = await hash(params.password);
+        delete params.password; // remove plain password
+    }
+
+    // ignore confirmPassword if passed accidentally
+    delete params.confirmPassword;
+
+    // email check
+    if (params.email && account.email !== params.email && await db.Account.findOne({ where: { email: params.email } })) {
+        throw 'Email "' + params.email + '" is already taken';
+    }
+
+    Object.assign(account, params);
+    account.updated = Date.now();
+    await account.save();
+
+    return basicDetails(account);
+}
+
+async function getAvailable() {
+    // get all accountIds already used in employees
+    const usedAccountIds = (await db.Employee.findAll({ attributes: ['accountId'] }))
+        .map(e => e.accountId);
+
+    // fetch only Active accounts not used yet
+    const accounts = await db.Account.findAll({
+        where: {
+            id: { [Op.notIn]: usedAccountIds },
+            status: 'Active'
+        },
+        attributes: ['id', 'firstName', 'lastName', 'email']
+    });
+
+    return accounts;
+}
+
+// ------------------ HELPER FUNCTIONS ------------------
+
+// Get account by ID
+async function getAccount(id) {
+    const account = await db.Account.findByPk(id);
+    if (!account) throw 'Account not found';
+    return account;
+}
+
+// Refresh token helper
+async function getRefreshToken(token) {
+    const refreshToken = await db.RefreshToken.findOne({ where: { token } });
+    if (!refreshToken || !refreshToken.isActive) throw 'Invalid token';
+    return refreshToken;
+}
+
+// Password hashing
+async function hash(password) {
+    return await bcrypt.hash(password, 10);
+}
+
+// JWT generation
+function generateJwtToken(account) {
+    return jwt.sign({ sub: account.id, id: account.id }, config.secret, { expiresIn: '15m' });
+}
+
+// Refresh token creation
+function generateRefreshToken(account, ipAddress) {
+    return new db.RefreshToken({
+        accountId: account.id,
+        token: randomTokenString(),
+        expires: new Date(Date.now() + 7*24*60*60*1000),
+        createdByIp: ipAddress
+    });
+}
+
+// Random token generator
+function randomTokenString() {
+    return crypto.randomBytes(40).toString('hex');
+}
+
+// Basic account details
+function basicDetails(account) {
+    const { id, title, firstName, lastName, email, role, created, updated, isVerified, status } = account;
+    return { id, title, firstName, lastName, email, role, created, updated, isVerified, status };
+}
+
+// ------------------ EMPLOYEE HELPER ------------------
+async function ensureEmployeeExists(account) {
+        await db.Employee.create({
+            accountId: account.id,
+            employeeId: await getNextEmployeeId(),
+            firstName: account.firstName,
+            lastName: account.lastName,
+            email: account.email
+        });
+}
+
+// Generate next employee ID
+async function getNextEmployeeId() {
+    const last = await db.Employee.findOne({
+        order: [['employeeId', 'DESC']]
+    });
+    return last ? last.employeeId + 1 : 1;
+}
+
+// ------------------ EMAIL FUNCTIONS ------------------
+async function sendVerificationEmail(account, origin) {
+    let message;
+    if (origin) {
+        const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
+        message = `<p>Please click the link to verify your email:</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`;
+    } else {
+        message = `<p>Use this token to verify your email with the <code>/account/verify-email</code> API:</p><p><code>${account.verificationToken}</code></p>`;
+    }
+
+    await sendEmail({
+        to: account.email,
+        subject: 'Verify Email',
+        html: `<h4>Verify Email</h4>${message}`
+    });
+}
+
+async function sendAlreadyRegisteredEmail(email, origin) {
+    let message;
+    if (origin) {
+        message = `<p>If you forgot your password visit <a href="${origin}/account/forgot-password">forgot password</a>.</p>`;
+    } else {
+        message = `<p>You can reset your password via the <code>/account/forgot-password</code> API.</p>`;
+    }
+
+    await sendEmail({
+        to: email,
+        subject: 'Email Already Registered',
+        html: `<h4>Email Already Registered</h4><p>Your email <strong>${email}</strong> is already registered.</p>${message}`
+    });
+}
+
+async function sendPasswordResetEmail(account, origin) {
+    let message;
+    if (origin) {
+        const resetUrl = `${origin}/account/reset-password?token=${account.resetToken}`;
+        message = `<p>Click the link to reset your password (valid 1 day):</p><p><a href="${resetUrl}">${resetUrl}</a></p>`;
+    } else {
+        message = `<p>Use this token to reset your password via the <code>/account/reset-password</code> API:</p><p><code>${account.resetToken}</code></p>`;
+    }
+
+    await sendEmail({
+        to: account.email,
+        subject: 'Reset Password',
+        html: `<h4>Reset Password Email</h4>${message}`
+    });
+}
+
+
+================================================================================
+File: accounts\accounts.controller.js
+Size: 9.13 kB
+================================================================================
+
+﻿const express = require('express');
+const router = express.Router();
+const Joi = require('joi');
+const validateRequest = require('_middleware/validate-request');
+const authorize = require('_middleware/authorize')
+const Role = require('_helpers/role');
+const accountService = require('./account.service');
+
+// routes
+router.post('/authenticate', authenticateSchema, authenticate);
+router.post('/refresh-token', refreshToken);
+router.post('/revoke-token', authorize(), revokeTokenSchema, revokeToken);
+router.post('/register', registerSchema, register);
+router.post('/verify-email', verifyEmailSchema, verifyEmail);
+router.post('/forgot-password', forgotPasswordSchema, forgotPassword);
+router.post('/validate-reset-token', validateResetTokenSchema, validateResetToken);
+router.post('/reset-password', resetPasswordSchema, resetPassword);
+router.get('/available', getAvailable);
+router.get('/', authorize(Role.Admin), getAll);
+router.get('/:id', authorize(), getById);
+router.post('/', authorize(Role.Admin), createSchema, create);
+router.put('/:id', authorize(), updateSchema, update);
+//router.delete('/:id', authorize(), deactivate);
+
+// file: accounts/accounts.controller.js
+//router.get('/available', authorize(Role.Admin), getAvailable);
+
+console.log("✅ Accounts controller loaded");
+
+module.exports = router;
+
+function getAvailable(req, res, next) {
+  accountService.getAvailable()
+    .then(accounts => res.json(accounts))
+    .catch(next);
+}
+
+function authenticateSchema(req, res, next) {
+    const schema = Joi.object({
+        email: Joi.string().required(),
+        password: Joi.string().required()
+    });
+    validateRequest(req, next, schema);
+}
+
+function authenticate(req, res, next) {
+    const { email, password } = req.body;
+    const ipAddress = req.ip;
+    accountService.authenticate({ email, password, ipAddress })
+        .then(({ refreshToken, ...account }) => {
+            setTokenCookie(res, refreshToken);
+            res.json(account);
+        })
+        .catch(next);
+}
+
+function refreshToken(req, res, next) {
+    const token = req.cookies.refreshToken;
+    const ipAddress = req.ip;
+    accountService.refreshToken({ token, ipAddress })
+        .then(({ refreshToken, ...account }) => {
+            setTokenCookie(res, refreshToken);
+            res.json(account);
+        })
+        .catch(next);
+}
+
+function revokeTokenSchema(req, res, next) {
+    const schema = Joi.object({
+        token: Joi.string().empty('')
+    });
+    validateRequest(req, next, schema);
+}
+
+function revokeToken(req, res, next) {
+    // accept token from request body or cookie
+    const token = req.body.token || req.cookies.refreshToken;
+    const ipAddress = req.ip;
+
+    if (!token) return res.status(400).json({ message: 'Token is required' });
+
+    // users can revoke their own tokens and admins can revoke any tokens
+    if (!req.user.ownsToken(token) && req.user.role !== Role.Admin) {
+        return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    accountService.revokeToken({ token, ipAddress })
+        .then(() => res.json({ message: 'Token revoked' }))
+        .catch(next);
+}
+
+function registerSchema(req, res, next) {
+    const schema = Joi.object({
+        title: Joi.string().required(),
+        firstName: Joi.string().required(),
+        lastName: Joi.string().required(),
+        email: Joi.string().email().required(),
+        password: Joi.string().min(6).required(),
+        confirmPassword: Joi.string().valid(Joi.ref('password')).required(),
+        //acceptTerms: Joi.boolean().valid(true).required()
+    });
+    validateRequest(req, next, schema);
+}
+
+function register(req, res, next) {
+    accountService.register(req.body, req.get('origin'))
+        .then(account => {
+            res.json({
+                message: 'Registration successful, please check your email for verification instructions',
+                account // optional: send basic account info back
+            });
+        })
+        .catch(next);
+}
+
+
+function verifyEmailSchema(req, res, next) {
+    const schema = Joi.object({
+        token: Joi.string().required()
+    });
+    validateRequest(req, next, schema);
+}
+
+function verifyEmail(req, res, next) {
+    accountService.verifyEmail(req.body)
+        .then(() => res.json({ message: 'Verification successful, you can now login' }))
+        .catch(next);
+}
+
+function forgotPasswordSchema(req, res, next) {
+    const schema = Joi.object({
+        email: Joi.string().email().required()
+    });
+    validateRequest(req, next, schema);
+}
+
+function forgotPassword(req, res, next) {
+    accountService.forgotPassword(req.body, req.get('origin'))
+        .then(() => res.json({ message: 'Please check your email for password reset instructions' }))
+        .catch(next);
+}
+
+function validateResetTokenSchema(req, res, next) {
+    const schema = Joi.object({
+        token: Joi.string().required()
+    });
+    validateRequest(req, next, schema);
+}
+
+function validateResetToken(req, res, next) {
+    accountService.validateResetToken(req.body)
+        .then(() => res.json({ message: 'Token is valid' }))
+        .catch(next);
+}
+
+function resetPasswordSchema(req, res, next) {
+    const schema = Joi.object({
+        token: Joi.string().required(),
+        password: Joi.string().min(6).required(),
+        confirmPassword: Joi.string().valid(Joi.ref('password')).required()
+    });
+    validateRequest(req, next, schema);
+}
+
+function resetPassword(req, res, next) {
+    accountService.resetPassword(req.body)
+        .then(() => res.json({ message: 'Password reset successful, you can now login' }))
+        .catch(next);
+}
+
+function getAll(req, res, next) {
+    accountService.getAll()
+        .then(accounts => res.json(accounts))
+        .catch(next);
+}
+
+function getById(req, res, next) {
+    // users can get their own account and admins can get any account
+    if (Number(req.params.id) !== req.user.id && req.user.role !== Role.Admin) {
+        return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    accountService.getById(req.params.id)
+        .then(account => account ? res.json(account) : res.sendStatus(404))
+        .catch(next);
+}
+
+function createSchema(req, res, next) {
+    const schema = Joi.object({
+        title: Joi.string().required(),
+        firstName: Joi.string().required(),
+        lastName: Joi.string().required(),
+        email: Joi.string().email().required(),
+        password: Joi.string().min(6).required(),
+        confirmPassword: Joi.string().valid(Joi.ref('password')).required(), // ✅ added
+        role: Joi.string().valid(Role.Admin, Role.User).required(),
+        status: Joi.string().valid('Active', 'Inactive').required() // 👈 must provide status
+    });
+    validateRequest(req, next, schema);
+}
+
+
+function create(req, res, next) {
+    accountService.create(req.body)
+        .then(account => res.json(account))
+        .catch(next);
+}
+
+function updateSchema(req, res, next) {
+    const schemaRules = {
+        title: Joi.string().empty(''),
+        firstName: Joi.string().empty(''),
+        lastName: Joi.string().empty(''),
+        email: Joi.string().email().empty(''),
+        password: Joi.string().min(6).empty(''),
+        confirmPassword: Joi.string().valid(Joi.ref('password')).when('password', {
+            is: Joi.exist(),
+            then: Joi.required(),
+            otherwise: Joi.forbidden()
+        }), // ✅ confirmPassword required only if password is present
+        status: Joi.string().valid('Active', 'Inactive').empty('')
+    };
+
+    // only admins can update role
+    if (req.user.role === Role.Admin) {
+        schemaRules.role = Joi.string().valid(Role.Admin, Role.User).empty('');
+    }
+
+    const schema = Joi.object(schemaRules);
+    validateRequest(req, next, schema);
+}
+
+function update(req, res, next) {
+    // users can update their own account and admins can update any account
+    if (Number(req.params.id) !== req.user.id && req.user.role !== Role.Admin) {
+        return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    accountService.update(req.params.id, req.body)
+        .then(account => res.json(account))
+        .catch(next);
+}
+
+function deactivate(req, res, next) { // Renamed from _delete
+    // users can deactivate their own account and admins can deactivate any account
+    if (Number(req.params.id) !== req.user.id && req.user.role !== Role.Admin) {
+        return res.status(401).json({ message: 'Unauthorized' });
+    }
+
+    accountService.deactivate(req.params.id)
+        .then(() => res.json({ message: 'Account deactivate successfully' }))
+        .catch(next);
+}
+
+// helper functions
+
+function setTokenCookie(res, token) {
+    // create cookie with refresh token that expires in 7 days
+    const cookieOptions = {
+        httpOnly: true,
+        expires: new Date(Date.now() + 7*24*60*60*1000)
+    };
+    res.cookie('refreshToken', token, cookieOptions);
+}
+
+================================================================================
+File: accounts\refresh-token.model.js
+Size: 979 B
+================================================================================
+
+const { DataTypes } = require('sequelize');
+
+module.exports = model;
+
+function model(sequelize) {
+    const attributes = {
+        token: { type: DataTypes.STRING },
+        expires: { type: DataTypes.DATE },
+        created: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+        createdByIp: { type: DataTypes.STRING },
+        revoked: { type: DataTypes.DATE },
+        revokedByIp: { type: DataTypes.STRING },
+        replacedByToken: { type: DataTypes.STRING },
+        isExpired: {
+            type: DataTypes.VIRTUAL,
+            get() { return Date.now() >= this.expires; }
+        },
+        isActive: {
+            type: DataTypes.VIRTUAL,
+            get() { return !this.revoked && !this.isExpired; }
+        }
+    };
+
+    const options = {
+        // disable default timestamp fields (createdAt and updatedAt)
+        timestamps: false
+    };
+
+    return sequelize.define('refreshToken', attributes, options);
+}
+
+================================================================================
+File: config.json
+Size: 544 B
+================================================================================
+
+﻿{
+    "database": {
+        "host": "localhost",
+        "port": 3306,
+        "user": "root",
+        "password": "root",
+        "database": "node-mysql-signup-verification-api"
+    },
+    "secret": "280062ee-c5f2-43d1-bafb-ecf1f7901952",
+    "emailFrom": "info@node-mysql-signup-verification-api.com",
+    "smtpOptions": {
+        "host": "smtp.ethereal.email",
+        "port": 587,
+        "auth": {
+            "user": "mohamed.swift31@ethereal.email",
+            "pass": "3bTvCbEx7b9MFZdT8b"    
+        }
+    }
+}   
+
+================================================================================
+File: departments\department.model.js
+Size: 723 B
+================================================================================
+
+// file: departments/department.model.js
+const { DataTypes } = require('sequelize');
+
+module.exports = model;
+
+function model(sequelize) {
+    const attributes = {
+        id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+        name: { type: DataTypes.STRING, allowNull: false },
+        description: { type: DataTypes.STRING, allowNull: true }
+    };
+
+    const options = { timestamps: false };
+
+    const Department = sequelize.define('Department', attributes, options);
+
+    Department.associate = (models) => {
+        Department.hasMany(models.Employee, {
+            foreignKey: 'departmentId',
+            as: 'employees'
+        });
+    };
+
+    return Department;
+}
+
+
+================================================================================
+File: departments\department.service.js
+Size: 1.47 kB
+================================================================================
+
+// file: departments/department.service.js
+const db = require('_helpers/db');
+
+module.exports = {
+  getAll,
+  getById,
+  create,
+  update,
+};
+
+// ===== Service Methods =====
+async function getAll() {
+  const departments = await db.Department.findAll({
+    include: [{ model: db.Employee, as: 'employees', attributes: ['id'] }],
+    order: [['name', 'ASC']]
+  });
+
+  return departments.map(dep => ({
+    id: dep.id,
+    name: dep.name,
+    description: dep.description,
+    employeeCount: dep.employees ? dep.employees.length : 0
+  }));
+}
+
+async function getById(id) {
+  const dep = await db.Department.findByPk(id, {
+    include: [
+      {
+        model: db.Employee,
+        as: 'employees',
+        attributes: ['id', 'employeeId', 'position', 'status']
+      }
+    ]
+  });
+
+  if (!dep) throw 'Department not found';
+
+  return {
+    id: dep.id,
+    name: dep.name,
+    description: dep.description,
+    employeeCount: dep.employees ? dep.employees.length : 0,
+    employees: dep.employees // 👈 optional: return full list of employees
+  };
+}
+
+async function create(params) {
+  // simple department creation
+  return await db.Department.create({
+    name: params.name,
+    description: params.description
+  });
+}
+
+async function update(id, params) {
+  const dep = await db.Department.findByPk(id);
+  if (!dep) throw 'Department not found';
+
+  Object.assign(dep, params);
+  await dep.save();
+  return dep;
+}
+
+
+================================================================================
+File: departments\departments.controller.js
+Size: 2.08 kB
+================================================================================
+
+// file: departments/departments.controller.js
+const express = require('express');
+const router = express.Router();
+const Joi = require('joi');
+const validateRequest = require('_middleware/validate-request');
+const authorize = require('_middleware/authorize');
+const Role = require('_helpers/role');
+const departmentService = require('./department.service');
+
+// ===== Routes =====
+router.get('/', /* authorize(Role.Admin), */ getAll);
+router.get('/:id', authorize(), getById);
+router.post('/', authorize(Role.Admin), createSchema, create);
+router.put('/:id', authorize(Role.Admin), updateSchema, update);
+router.delete('/:id', authorize(Role.Admin), _delete);
+
+console.log("✅ Departments controller loaded");
+
+module.exports = router;
+
+// ===== Schemas =====
+function createSchema(req, res, next) {
+  const schema = Joi.object({
+    name: Joi.string().required(),
+    description: Joi.string().allow('', null)
+  });
+  validateRequest(req, next, schema);
+}
+
+function updateSchema(req, res, next) {
+  const schema = Joi.object({
+    name: Joi.string().empty(''),
+    description: Joi.string().allow('', null).empty('')
+  });
+  validateRequest(req, next, schema);
+}
+
+// ===== Route Handlers =====
+function getAll(req, res, next) {
+  departmentService.getAll()
+    .then(departments => res.json(departments))
+    .catch(next);
+}
+
+function getById(req, res, next) {
+  departmentService.getById(req.params.id)
+    .then(dep => dep ? res.json(dep) : res.sendStatus(404))
+    .catch(next);
+}
+
+function create(req, res, next) {
+  departmentService.create(req.body)
+    .then(dep => res.json(dep))
+    .catch(next);
+}
+
+function update(req, res, next) {
+  departmentService.update(req.params.id, req.body)
+    .then(dep => res.json(dep))
+    .catch(next);
+}
+
+function _delete(req, res, next) {
+  // Hard delete — remove the department entirely
+  // Or soft delete (if you want to keep data)
+  departmentService.delete(req.params.id)
+    .then(() => res.json({ message: 'Department deleted' }))
+    .catch(next);
+}
+
+
+================================================================================
+File: employees\employee.model.js
+Size: 2.22 kB
+================================================================================
+
+// file: employees/employee.model.js
+const { DataTypes } = require('sequelize');
+
+module.exports = model;
+
+function model(sequelize) {
+    const attributes = {
+        id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true }, // 👈 must exist
+        employeeId: { type: DataTypes.STRING, unique: true },
+        departmentId: { type: DataTypes.INTEGER, allowNull: true },  // 👈 FK now
+        positionId: { type: DataTypes.INTEGER, allowNull : true, references: {model: 'Positions', key: 'id'}},  // ✅ use relation
+        hireDate: { type: DataTypes.DATE, allowNull: true, defaultValue: DataTypes.NOW },
+        accountId: { type: DataTypes.INTEGER, allowNull: false },
+        status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'Active' },
+    };
+
+    const options = {
+        timestamps: false,
+        hooks: {
+            async beforeCreate(employee) {
+                const last = await sequelize.models.Employee.findOne({
+                    order: [['employeeId', 'DESC']]
+                });
+                let nextNumber = 1;
+                if (last) {
+                    const lastNum = parseInt(last.employeeId?.replace('EMP', '')) || 0;
+                    nextNumber = lastNum + 1;
+                }
+                employee.employeeId = `EMP${String(nextNumber).padStart(3, '0')}`;
+            }
+        }
+    };
+
+    const Employee = sequelize.define('Employee', attributes, options);
+
+    // === ASSOCIATIONS ===
+    Employee.associate = (models) => {
+        // Employee has many requests
+        Employee.hasMany(models.Request, {
+            foreignKey: 'employeeId',
+            as: 'requests'
+        });
+
+        // Employee belongs to Account
+        Employee.belongsTo(models.Account, {
+            foreignKey: 'accountId',
+            as: 'account'
+        });
+
+        Employee.belongsTo(models.Department, { 
+        foreignKey: 'departmentId', 
+        as: 'department' });
+
+        // 👇 ADD THIS: Employee belongs to Position
+        Employee.belongsTo(models.Position, { 
+            foreignKey: 'positionId', 
+            as: 'position' 
+        });
+    };
+    return Employee;
+}
+
+
+================================================================================
+File: employees\employee.service.js
+Size: 7.94 kB
+================================================================================
+
+// file: employees/employee.service.js
+const db = require('_helpers/db');
+
+// ======================
+// Exported functions
+// ======================
+module.exports = {
+  getAll,
+  getById,
+  create,
+  update,
+  getNextEmployeeId,
+  getByEmployeeId
+};
+
+// ======================
+// Service Methods
+// ======================
+
+// Get all employees
+async function getAll() {
+  const employees = await db.Employee.findAll({
+    include: [
+      { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+      { model: db.Department, as: 'department', attributes: ['id', 'name'] },
+      { model: db.Position, as: 'position', attributes: ['id', 'name'] }
+    ],
+    order: [['employeeId', 'ASC']]
+  });
+
+  return employees.map(emp => ({
+    id: emp.id,
+    accountId: emp.accountId,
+    account: emp.account ? {
+      id: emp.account.id,
+      email: emp.account.email,
+      status: emp.account.status
+    } : null,
+    employeeId: emp.employeeId,
+    position: emp.position ? emp.position.name : null,
+    positionId: emp.position ? emp.position.id : null,
+    department: emp.department ? emp.department.name : null,
+    departmentId: emp.department ? emp.department.id : null,
+    hireDate: emp.hireDate,
+    status: emp.status
+  }));
+}
+
+// Get employee by ID
+async function getById(id) {
+  const emp = await db.Employee.findOne({
+    where: { employeeId: id },
+    include: [
+      { model: db.Account, as: 'account', attributes: ['id','email','status'] },
+      { model: db.Department, as: 'department', attributes: ['id','name'] },
+      { model: db.Position, as: 'position', attributes: ['id','name'] }
+    ]
+  });
+
+  if (!emp) throw 'Employee not found';
+
+  return {
+    id: emp.id,
+    employeeId: emp.employeeId,
+    accountId: emp.accountId,
+    position: emp.position ? emp.position.name : null,
+    positionId: emp.position ? emp.position.id : null,
+    department: emp.department ? emp.department.name : null,
+    departmentId: emp.department ? emp.department.id : null,
+    hireDate: emp.hireDate,
+    status: emp.status
+  };
+}
+
+// Get next employee ID
+async function getNextEmployeeId() {
+  const last = await db.Employee.findOne({ order: [['employeeId', 'DESC']] });
+  let nextNumber = 1;
+  if (last) {
+    const lastNum = parseInt(last.employeeId?.replace('EMP', '')) || 0;
+    nextNumber = lastNum + 1;
+  }
+  return `EMP${String(nextNumber).padStart(3, '0')}`;
+}
+
+// Get workflows by employee ID
+async function getByEmployeeId(employeeId) {
+  console.log('Searching workflows for employeeId:', employeeId);
+  const employee = await db.Employee.findOne({ where: { employeeId } });
+  console.log('Found employee:', employee?.toJSON());
+
+  const workflows = await db.Workflow.findAll({
+    where: { employeeId: employee.id },
+    include: [{ model: db.Employee, as: 'employee', attributes: ['id','employeeId'] }],
+    order: [['id', 'ASC']]
+  });
+
+  console.log('Workflows found:', workflows.map(w => w.toJSON()));
+  return workflows;
+}
+
+// Create new employee
+async function create(params) {
+  // Prevent duplicate account
+  const existing = await db.Employee.findOne({ where: { accountId: params.accountId } });
+  if (existing) throw `Account ID ${params.accountId} is already linked to an employee`;
+
+      // Resolve department
+    let department = null;
+    if (params.department) {
+        [department] = await db.Department.findOrCreate({
+            where: { name: params.department },
+            defaults: { description: '' }  // optional
+        });
+        params.departmentId = department.id;
+    }
+
+    // Resolve position
+    let position = null;
+    if (params.position) {
+        [position] = await db.Position.findOrCreate({
+            where: { name: params.position },
+            defaults: { description: '' }
+        });
+        params.positionId = position.id;
+    }
+
+  // Create employee
+  const employee = await db.Employee.create(params);
+
+  // Default onboarding workflow
+  const onboardingWorkflow = await db.Workflow.create({
+    type: 'Onboarding',
+    details: `Employee ${employee.employeeId} onboarded in ${department?.name || 'Department'}`,
+    employeeId: employee.id,
+    status: 'Pending'
+  });
+
+  return {
+    ...employee.get({ plain: true }),
+    workflows: [onboardingWorkflow]
+  };
+}
+
+// Update employee
+async function update(id, params) {
+  const employee = await db.Employee.findOne({ where: { employeeId: id } });
+  if (!employee) throw 'Employee not found';
+
+  const oldDepartmentId = employee.departmentId;
+  const oldPositionId = employee.positionId; // 🔹 track old position
+
+  // Prevent duplicate account linkage
+  if (params.accountId && params.accountId !== employee.accountId) {
+    const existing = await db.Employee.findOne({ where: { accountId: params.accountId } });
+    if (existing) throw `Account ID ${params.accountId} is already linked to another employee`;
+    employee.accountId = params.accountId;
+  }
+
+  // Department update
+  if (params.departmentId !== undefined && params.departmentId !== null) {
+    const department = await db.Department.findByPk(params.departmentId);
+    if (!department) throw 'Department not found';
+    employee.departmentId = department.id;
+  } else if (params.department) {
+    const [department] = await db.Department.findOrCreate({
+      where: { name: params.department },
+      defaults: { description: '' }
+    });
+    employee.departmentId = department.id;
+  }
+
+  // Position update
+  if (params.positionId !== undefined && params.positionId !== null) {
+    const position = await db.Position.findByPk(params.positionId);
+    if (!position) throw 'Position not found';
+    employee.positionId = position.id;
+  } else if (params.position) {
+    const [position] = await db.Position.findOrCreate({ where: { name: params.position } });
+    employee.positionId = position.id;
+  }
+
+  // Other fields
+  if (params.position !== undefined) employee.position = params.position;
+  if (params.status !== undefined) employee.status = params.status;
+  if (params.hireDate !== undefined) employee.hireDate = params.hireDate;
+
+  await employee.save();
+
+  // Create workflow if department changed
+  if (oldDepartmentId && oldDepartmentId !== employee.departmentId) {
+    const oldDept = await db.Department.findByPk(oldDepartmentId);
+    const newDept = await db.Department.findByPk(employee.departmentId);
+
+    await db.Workflow.create({
+      type: 'Department Transfer',
+      details: `Transferred from ${oldDept?.name || 'Unknown'} to ${newDept?.name || 'Unknown'}`,
+      status: 'Pending',
+      employeeId: employee.id
+    });
+  }
+  
+  // 🔹 Create workflow if position changed
+  if (oldPositionId && oldPositionId !== employee.positionId) {
+    const oldPos = await db.Position.findByPk(oldPositionId);
+    const newPos = await db.Position.findByPk(employee.positionId);
+
+    await db.Workflow.create({
+      type: 'Change Position',
+      details: `Changed position from ${oldPos?.name || 'Unknown'} to ${newPos?.name || 'Unknown'}`,
+      status: 'Pending',
+      employeeId: employee.id
+    });
+  }
+
+  // Return updated employee
+  const updatedEmployee = await db.Employee.findOne({
+    where: { id: employee.id },
+     include: [
+      { model: db.Department, as: 'department', attributes: ['id','name'] },
+      { model: db.Position, as: 'position', attributes: ['id','name'] }
+    ]
+  });
+
+  return {
+    ...employee.get({ plain: true }),
+    department: updatedEmployee.department ? updatedEmployee.department.name : null,
+    departmentId: updatedEmployee.department ? updatedEmployee.department.id : null,
+    position: updatedEmployee.position ? updatedEmployee.position.name : null,
+    positionId: updatedEmployee.position ? updatedEmployee.position.id : null
+  };
+}
+
+
+================================================================================
+File: employees\employees.controller.js
+Size: 3.53 kB
+================================================================================
+
+    // file: employees/employees.controller.js
+    const express = require('express');
+    const router = express.Router();
+    const Joi = require('joi');
+    const validateRequest = require('_middleware/validate-request');
+    const authorize = require('_middleware/authorize');
+    const Role = require('_helpers/role');
+    const employeeService = require('./employee.service');
+
+    // routes
+    router.get('/', /* authorize(Role.Admin), */ getAll);
+    router.get('/next-id', getNextEmployeeId);  // ✅ put here
+    router.get('/:id', authorize(), getById);
+    router.post('/', authorize(Role.Admin), createSchema, create);
+    router.put('/:id', authorize(Role.Admin), updateSchema, update);
+    router.delete('/:id', authorize(Role.Admin), _delete);
+    
+    console.log("✅ Employees controller loaded");
+
+    module.exports = router;
+   
+    const currentYear = new Date().getFullYear();
+
+    // ===== Schemas =====
+    function createSchema(req, res, next) {
+        const schema = Joi.object({
+        accountId: Joi.number().required(),
+        positionId: Joi.number().optional(),
+        position: Joi.string().required(),
+        department: Joi.string().required(),
+        departmentId: Joi.number().optional(),  
+        hireDate: Joi.date()
+            .required()
+            .max(new Date(`${currentYear}-12-31`)) // ❌ prevent future years
+            .messages({
+                "date.max": `Hire Date cannot be in a future year beyond ${currentYear}`
+            }),
+        status: Joi.string().valid('Active', 'Inactive').default('Active')
+    });
+        validateRequest(req, next, schema);
+    }
+
+    function updateSchema(req, res, next) {
+    const schema = Joi.object({
+    accountId: Joi.number().empty(''),
+    positionId: Joi.number().optional(),
+    position: Joi.string().empty(''),
+    department: Joi.string().empty(''),         // still allowed by name
+    departmentId: Joi.number().integer().optional(), // <-- allow ID
+    hireDate: Joi.date()
+      .empty('')
+      .max(new Date(`${currentYear}-12-31`))
+      .messages({
+        "date.max": `Hire Date cannot be in a future year beyond ${currentYear}`
+      }),
+    status: Joi.string().valid('Active', 'Inactive').empty('')
+  });
+  validateRequest(req, next, schema);
+}
+
+    // ===== Route Handlers =====
+    function getAll(req, res, next) {
+        employeeService.getAll()
+            .then(employee => res.json(employee))
+            .catch(next);
+    }
+
+    function getById(req, res, next) {
+        employeeService.getById(req.params.id)
+            .then(employee => employee ? res.json(employee) : res.sendStatus(404))
+            .catch(next);
+    }
+
+    function getNextEmployeeId(req, res, next) {
+    employeeService.getNextEmployeeId()
+        .then(nextId => res.json({ nextId }))
+        .catch(next);
+    }
+
+    function create(req, res, next) {
+        console.log('Incoming payload:', req.body);   // 👈 add here
+        employeeService.create(req.body)
+            .then(employee => res.json(employee))
+            .catch(next);
+    }
+
+    function update(req, res, next) {
+        employeeService.update(req.params.id, req.body)
+            .then(employee => res.json(employee))
+            .catch(next);
+    }
+
+    function _delete(req, res, next) {
+    employeeService.deactivate(req.params.id)
+        .then(employee => res.json({ message: 'Employee deactivated', employee }))
+        .catch(next);
+    }
+
+
+
+
+================================================================================
+File: package.json
+Size: 1.4 kB
+================================================================================
+
+{
+    "$schema": "https://json.schemastore.org/package.json",
+    "name": "node-mysql-signup-verification-api",
+    "version": "1.0.0",
+    "description": "NodeJS + MySQL API for Email Sign Up with Verification, Authentication & Forgot Password",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/cornflourblue/node-mysql-signup-verification-api.git"
+    },
+    "scripts": {
+        "start": "node server.js",
+        "start:dev": "nodemon ./server.js",
+        "export:all": "folder2txt --output Backend.txt C:/Users/Public/group-project-repo --exclude node_modules --exclude .vscode --exclude .git --exclude .angular --exclude .DS_Store --exclude *.log"
+    },
+    "dependencies": {
+        "bcryptjs": "^2.4.3",
+        "body-parser": "^1.19.0",
+        "cookie-parser": "^1.4.5",
+        "cors": "^2.8.5",
+        "dotenv": "^17.2.3",
+        "express": "^4.17.1",
+        "express-jwt": "^6.0.0",
+        "folder2txt": "^1.0.2",
+        "joi": "^17.2.1",
+        "jsonwebtoken": "^8.5.1",
+        "mysql2": "^2.1.0",
+        "nodemailer": "^6.4.11",
+        "pg": "^8.16.3",
+        "pg-hstore": "^2.3.4",
+        "rootpath": "^0.1.2",
+        "sequelize": "^6.3.4",
+        "swagger-ui-express": "^4.1.4",
+        "yamljs": "^0.3.0"
+    },
+    "devDependencies": {
+        "nodemon": "^2.0.3"
+    }
+}
+
+
+================================================================================
+File: positions\position.model.js
+Size: 661 B
+================================================================================
+
+// file: positions/position.model.js
+const { DataTypes } = require('sequelize');
+
+module.exports = model;
+
+function model(sequelize) {
+  const attributes = {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    name: { type: DataTypes.STRING, allowNull: false },
+    description: { type: DataTypes.STRING, allowNull: true }
+  };
+
+  const options = { timestamps: false };
+
+  const Position = sequelize.define('Position', attributes, options);
+
+  Position.associate = (models) => {
+    Position.hasMany(models.Employee, {
+      foreignKey: 'positionId',
+      as: 'employees'
+    });
+  };
+
+  return Position;
+}
+
+
+================================================================================
+File: positions\position.service.js
+Size: 1.53 kB
+================================================================================
+
+// file: positions/position.service.js
+const db = require('_helpers/db');
+
+module.exports = {
+  getAll,
+  getById,
+  create,
+  update,
+  delete: _delete
+};
+
+// ===== Service Methods =====
+async function getAll() {
+  const positions = await db.Position.findAll({
+    include: [{ model: db.Employee, as: 'employees', attributes: ['id'] }],
+    order: [['name', 'ASC']]
+  });
+
+  return positions.map(pos => ({
+    id: pos.id,
+    name: pos.name,
+    description: pos.description,
+    employeeCount: pos.employees ? pos.employees.length : 0
+  }));
+}
+
+async function getById(id) {
+  const pos = await db.Position.findByPk(id, {
+    include: [
+      {
+        model: db.Employee,
+        as: 'employees',
+        attributes: ['id', 'employeeId', 'status']
+      }
+    ]
+  });
+
+  if (!pos) throw 'Position not found';
+
+  return {
+    id: pos.id,
+    name: pos.name,
+    description: pos.description,
+    employeeCount: pos.employees ? pos.employees.length : 0,
+    employees: pos.employees
+  };
+}
+
+async function create(params) {
+  return await db.Position.create({
+    name: params.name,
+    description: params.description
+  });
+}
+
+async function update(id, params) {
+  const pos = await db.Position.findByPk(id);
+  if (!pos) throw 'Position not found';
+
+  Object.assign(pos, params);
+  await pos.save();
+  return pos;
+}
+
+async function _delete(id) {
+  const pos = await db.Position.findByPk(id);
+  if (!pos) throw 'Position not found';
+
+  await pos.destroy();
+}
+
+
+================================================================================
+File: positions\positions.controller.js
+Size: 1.95 kB
+================================================================================
+
+// file: positions/positions.controller.js
+const express = require('express');
+const router = express.Router();
+const Joi = require('joi');
+const validateRequest = require('_middleware/validate-request');
+const authorize = require('_middleware/authorize');
+const Role = require('_helpers/role');
+const positionService = require('./position.service');
+
+// ===== Routes =====
+router.get('/', /* authorize(Role.Admin), */ getAll);
+router.get('/:id', authorize(), getById);
+router.post('/', authorize(Role.Admin), createSchema, create);
+router.put('/:id', authorize(Role.Admin), updateSchema, update);
+router.delete('/:id', authorize(Role.Admin), _delete);
+
+console.log("✅ Positions controller loaded");
+
+module.exports = router;
+
+// ===== Schemas =====
+function createSchema(req, res, next) {
+  const schema = Joi.object({
+    name: Joi.string().required(),
+    description: Joi.string().allow('', null)
+  });
+  validateRequest(req, next, schema);
+}
+
+function updateSchema(req, res, next) {
+  const schema = Joi.object({
+    name: Joi.string().empty(''),
+    description: Joi.string().allow('', null).empty('')
+  });
+  validateRequest(req, next, schema);
+}
+
+// ===== Route Handlers =====
+function getAll(req, res, next) {
+  positionService.getAll()
+    .then(positions => res.json(positions))
+    .catch(next);
+}
+
+function getById(req, res, next) {
+  positionService.getById(req.params.id)
+    .then(pos => pos ? res.json(pos) : res.sendStatus(404))
+    .catch(next);
+}
+
+function create(req, res, next) {
+  positionService.create(req.body)
+    .then(pos => res.json(pos))
+    .catch(next);
+}
+
+function update(req, res, next) {
+  positionService.update(req.params.id, req.body)
+    .then(pos => res.json(pos))
+    .catch(next);
+}
+
+function _delete(req, res, next) {
+  positionService.delete(req.params.id)
+    .then(() => res.json({ message: 'Position deleted' }))
+    .catch(next);
+}
+
+
+================================================================================
+File: requests\request.controller.js
+Size: 1.49 kB
+================================================================================
+
+const express = require('express');
+const router = express.Router();
+const requestService = require('./request.service');
+
+// Routes
+router.get('/', getAll);
+router.get('/active-employees', getActiveEmployeesRoute);
+router.get('/all-employees', getAllEmployeesRoute); // ✅ new route
+router.get('/:id', getById);
+router.post('/', create);
+router.put('/:id', update);
+
+console.log("✅ Requests controller loaded");
+
+module.exports = router;
+
+// ------------------ ROUTE HANDLERS ------------------
+
+function getAll(req, res, next) {
+    requestService.getAll()
+        .then(requests => res.json(requests))
+        .catch(next);
+}
+
+function getActiveEmployeesRoute(req, res, next) {
+    requestService.getActiveEmployees()
+        .then(employees => res.json(employees))
+        .catch(next);
+}
+
+// ✅ New route handler for all employees
+function getAllEmployeesRoute(req, res, next) {
+    requestService.getAllEmployees()
+        .then(employees => res.json(employees))
+        .catch(next);
+}
+
+function getById(req, res, next) {
+    requestService.getById(req.params.id)
+        .then(request => res.json(request))
+        .catch(next);
+}
+
+function create(req, res, next) {
+    requestService.create(req.body)
+        .then(request => res.json(request))
+        .catch(next);
+}
+
+function update(req, res, next) {
+    requestService.update(req.params.id, req.body)
+        .then(request => res.json(request))
+        .catch(next);
+}
+
+
+================================================================================
+File: requests\request.model.js
+Size: 522 B
+================================================================================
+
+module.exports = (sequelize, DataTypes) => {
+  const Request = sequelize.define('Request', {
+    type: { type: DataTypes.STRING, allowNull: false },
+    items: { type: DataTypes.STRING, allowNull: false },
+    status: { type: DataTypes.STRING, defaultValue: 'Pending' },
+    employeeId: { type: DataTypes.INTEGER, allowNull: false }
+  });
+
+  Request.associate = (models) => {
+    Request.belongsTo(models.Employee, {
+      foreignKey: 'employeeId',
+      as: 'employee'
+    });
+  };
+
+  return Request;
+};
+
+
+================================================================================
+File: requests\request.service.js
+Size: 5.73 kB
+================================================================================
+
+const db = require('_helpers/db');
+
+module.exports = {
+    getAll,
+    getById,
+    create,
+    update,
+    getActiveEmployees,
+    getAllEmployees
+};
+
+// ------------------ FUNCTIONS ------------------
+
+// ✅ Fetch all requests with their employees + account info
+async function getAll() {
+    const requests = await db.Request.findAll({
+        include: [
+            {
+                model: db.Employee,
+                as: 'employee',
+                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                include: [
+                    {
+                        model: db.Account,
+                        as: 'account',
+                        attributes: ['id', 'email', 'status']
+                    },
+                    { 
+                        model: db.Department, 
+                        as: 'department', 
+                        attributes: ['name'] // get department name
+                    },
+                    {
+                        model: db.Position,
+                        as: 'position',
+                        attributes: ['name'] 
+                    }
+                ]
+            }
+        ],
+        order: [['id', 'ASC']]
+    });
+
+    return requests;
+}
+
+// ✅ Fetch a single request by ID
+async function getById(id) {
+    return await db.Request.findByPk(id, {
+        include: [
+            {
+                model: db.Employee,
+                as: 'employee',
+                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                include: [
+                    { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+                    { model: db.Department, as: 'department', attributes: ['name'] },
+                    { model: db.Position, as: 'position', attributes: ['name'] }
+                ]
+            }
+        ]
+    });
+}
+
+// // ✅ Create a new request (allows inactive employees)
+// async function create(params) {
+//     const { type, items, status, employeeId } = params;
+
+//     if (!employeeId) throw new Error('Employee is required');
+
+//     // request.service.js
+//     const employee = await db.Employee.findByPk(employeeId, {
+//     include: [{ model: db.Account, as: 'account' }]
+//     });
+    
+//     if (!employee) throw new Error('Employee not found');
+
+//     // Log if employee account is inactive
+//     if (employee.account?.status !== 'Active') {
+//         console.warn(`Creating request for inactive employee: ${employee.employeeId}`);
+//     }
+
+//     const request = await db.Request.create({
+//         type,
+//         items,
+//         status: status || 'Pending',
+//         employeeId: employee.id
+//     });
+
+//     return await getById(request.id);
+// }
+
+// ✅ Update request
+async function update(id, params) {
+    const request = await getById(id);
+    if (!request) throw new Error('Request not found');
+
+    Object.assign(request, params);
+    await request.save();
+
+    return await getById(request.id);
+}
+
+async function create(params) {
+    const { type, items, status, employeeId } = params;
+
+    if (!employeeId) throw new Error('Employee is required');
+
+    const employee = await db.Employee.findByPk(employeeId, {
+        include: [{ model: db.Account, as: 'account' }]
+    });
+    if (!employee) throw new Error('Employee not found');
+
+    // Log if employee account is inactive
+    if (employee.account?.status !== 'Active') {
+        console.warn(`Creating request for inactive employee: ${employee.employeeId}`);
+    }
+
+    // 1️⃣ Create the request
+    const request = await db.Request.create({
+        type,
+        items,
+        status: status || 'Pending',
+        employeeId: employee.id
+    });
+
+    // 2️⃣ Automatically create a workflow for this request
+    const workflow = await db.Workflow.create({
+        type: request.type,  // matches frontend workflow type
+        details: `Review ${request.type} request #${request.id} from Employee ${employee.employeeId}`,
+        employeeId: employee.id,   // assign to the employee who created request
+        requestId: request.id,     // link workflow to request
+        status: 'Pending'
+    });
+
+    console.log('Workflow created:', workflow.toJSON()); // ✅ now it logs properly
+
+    // 3️⃣ Return full request with relations
+    return await getById(request.id);
+}
+
+
+// ✅ Fetch employees with active accounts (for dropdown)
+async function getActiveEmployees() {
+    const employees = await db.Employee.findAll({
+        include: [
+            {
+                model: db.Account,
+                as: 'account',
+                attributes: ['id', 'email', 'status'],
+                where: { status: 'Active' }
+            }
+        ],
+        order: [['employeeId', 'ASC']]
+    });
+
+    return employees.map(e => ({
+        id: e.id,
+        employeeId: e.employeeId,
+        account: e.account ? { id: e.account.id, email: e.account.email } : null
+    }));
+}
+
+// ✅ Fetch all employees (active + inactive)
+async function getAllEmployees() {
+    const employees = await db.Employee.findAll({
+        include: [
+            {
+                model: db.Account,
+                as: 'account',
+                attributes: ['id', 'email', 'status']
+            }
+        ],
+        order: [['employeeId', 'ASC']]
+    });
+
+    return employees.map(e => ({
+        id: e.id,
+        employeeId: e.employeeId,
+        account: e.account
+            ? { id: e.account.id, email: e.account.email, status: e.account.status }
+            : null
+    }));
+}
+
+
+================================================================================
+File: server.js
+Size: 1.43 kB
+================================================================================
+
+﻿require('rootpath')();
+const express = require('express');
+const app = express();
+const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
+const cors = require('cors');
+const errorHandler = require('_middleware/error-handler');
+const employeesController = require('./employees/employees.controller');
+
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+app.use(cookieParser());
+
+// allow cors requests from any origin and with credentials
+app.use(cors({ origin: (origin, callback) => callback(null, true), credentials: true }));
+
+// api routes
+app.use('/accounts', require('./accounts/accounts.controller'));
+app.use('/employees', require('./employees/employees.controller'));  // ✅ enable employees API
+app.use('/requests', require('./requests/request.controller'));  // ✅ enable requests API
+app.use('/workflows', require('./workflows/workflow.controller'));  // ✅ enable workflows API
+app.use('/departments', require('./departments/departments.controller'));
+app.use('/positions', require('./positions/positions.controller'));
+
+// swagger docs route
+app.use('/api-docs', require('_helpers/swagger'));
+
+// global error handler
+app.use(errorHandler);
+
+// start server
+const port = process.env.NODE_ENV === 'production' ? (process.env.PORT || 80) : 4000;
+app.listen(port, () => console.log('Server listening on port ' + port));
+
+
+================================================================================
+File: swagger.yaml
+Size: 23.7 kB
+================================================================================
+
+openapi: 3.0.0
+info:
+  title: Node.js Sign-up and Verification API
+  description: Node.js + MySQL - API with email sign-up, verification, authentication and forgot password
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:4000
+    description: Local development server
+
+paths:
+  /accounts/authenticate:
+    post:
+      summary: Authenticate account credentials and return a JWT token and a cookie with a refresh token
+      description: Accounts must be verified before authenticating.
+      operationId: authenticate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  example: "jason@example.com"
+                password:
+                  type: string
+                  example: "pass123"
+              required:
+                - email
+                - password
+      responses:
+        "200":
+          description: Account details, a JWT access token and a refresh token cookie
+          headers:
+            Set-Cookie:
+              description: "`refreshToken`"
+              schema:
+                type: string
+                example: refreshToken=51872eca5efedcf424db4cf5afd16a9d00ad25b743a034c9c221afc85d18dcd5e4ad6e3f08607550; Path=/; Expires=Tue, 16 Jun 2020 09:14:17 GMT; HttpOnly
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "5eb12e197e06a76ccdefc121"
+                  title:
+                    type: string
+                    example: "Mr"
+                  firstName:
+                    type: string
+                    example: "Jason"
+                  lastName:
+                    type: string
+                    example: "Watmore"
+                  email:
+                    type: string
+                    example: "jason@example.com"
+                  role:
+                    type: string
+                    example: "Admin"
+                  created:
+                    type: string
+                    example: "2020-05-05T09:12:57.848Z"
+                  isVerified:
+                    type: boolean
+                    example: true
+                  jwtToken:
+                    type: string
+                    example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1ZWIxMmUxOTdlMDZhNzZjY2RlZmMxMjEiLCJpZCI6IjVlYjEyZTE5N2UwNmE3NmNjZGVmYzEyMSIsImlhdCI6MTU4ODc1ODE1N30.xR9H0STbFOpSkuGA9jHNZOJ6eS7umHHqKRhI807YT1Y"
+        "400":
+          description: The email or password is incorrect
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Email or password is incorrect"
+  /accounts/refresh-token:
+    post:
+      summary: Use a refresh token to generate a new JWT token and a new refresh token
+      description: The refresh token is sent and returned via cookies.
+      operationId: refreshToken
+      parameters:
+        - in: cookie
+          name: refreshToken
+          description: The `refreshToken` cookie
+          schema:
+            type: string
+            example: 51872eca5efedcf424db4cf5afd16a9d00ad25b743a034c9c221afc85d18dcd5e4ad6e3f08607550
+      responses:
+        "200":
+          description: Account details, a JWT access token and a new refresh token cookie
+          headers:
+            Set-Cookie:
+              description: "`refreshToken`"
+              schema:
+                type: string
+                example: refreshToken=51872eca5efedcf424db4cf5afd16a9d00ad25b743a034c9c221afc85d18dcd5e4ad6e3f08607550; Path=/; Expires=Tue, 16 Jun 2020 09:14:17 GMT; HttpOnly
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "5eb12e197e06a76ccdefc121"
+                  title:
+                    type: string
+                    example: "Mr"
+                  firstName:
+                    type: string
+                    example: "Jason"
+                  lastName:
+                    type: string
+                    example: "Watmore"
+                  email:
+                    type: string
+                    example: "jason@example.com"
+                  role:
+                    type: string
+                    example: "Admin"
+                  created:
+                    type: string
+                    example: "2020-05-05T09:12:57.848Z"
+                  isVerified:
+                    type: boolean
+                    example: true
+                  jwtToken:
+                    type: string
+                    example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1ZWIxMmUxOTdlMDZhNzZjY2RlZmMxMjEiLCJpZCI6IjVlYjEyZTE5N2UwNmE3NmNjZGVmYzEyMSIsImlhdCI6MTU4ODc1ODE1N30.xR9H0STbFOpSkuGA9jHNZOJ6eS7umHHqKRhI807YT1Y"
+        "400":
+          description: The refresh token is invalid, revoked or expired
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalid token"
+  /accounts/revoke-token:
+    post:
+      summary: Revoke a refresh token
+      description: Admin users can revoke the tokens of any account, regular users can only revoke their own tokens.
+      operationId: revokeToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: cookie
+          name: refreshToken
+          description: The refresh token can be sent in a cookie or the post body, if both are sent the token in the body is used.
+          schema:
+            type: string
+            example: 51872eca5efedcf424db4cf5afd16a9d00ad25b743a034c9c221afc85d18dcd5e4ad6e3f08607550
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  example: "51872eca5efedcf424db4cf5afd16a9d00ad25b743a034c9c221afc85d18dcd5e4ad6e3f08607550"
+      responses:
+        "200":
+          description: The refresh token was successfully revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Token revoked"
+        "400":
+          description: The refresh token is invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalid token"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+  /accounts/register:
+    post:
+      summary: Register a new user account and send a verification email
+      description: The first account registered in the system is assigned the `Admin` role, other accounts are assigned the `User` role.
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: "Mr"
+                firstName:
+                  type: string
+                  example: "Jason"
+                lastName:
+                  type: string
+                  example: "Watmore"
+                email:
+                  type: string
+                  example: "jason@example.com"
+                password:
+                  type: string
+                  example: "pass123"
+                confirmPassword:
+                  type: string
+                  example: "pass123"
+                acceptTerms:
+                  type: boolean
+              required:
+                - title
+                - firstName
+                - lastName
+                - email
+                - password
+                - confirmPassword
+                - acceptTerms
+      responses:
+        "200":
+          description: The registration request was successful and a verification email has been sent to the specified email address
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Registration successful, please check your email for verification instructions"
+  /accounts/verify-email:
+    post:
+      summary: Verify a new account with a verification token received by email after registration
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  example: "3c7f8d9c4cb348ff95a0b74a1452aa24fc9611bb76768bb9eafeeb826ddae2935f1880bc7713318f"
+              required:
+                - token
+      responses:
+        "200":
+          description: Verification was successful so you can now login to the account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Verification successful, you can now login"
+        "400":
+          description: Verification failed due to an invalid token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Verification failed"
+  /accounts/forgot-password:
+    post:
+      summary: Submit email address to reset the password on an account
+      operationId: forgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  example: "jason@example.com"
+              required:
+                - email
+      responses:
+        "200":
+          description: The request was received and an email has been sent to the specified address with password reset instructions (if the email address is associated with an account)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Please check your email for password reset instructions"
+  /accounts/validate-reset-token:
+    post:
+      summary: Validate the reset password token received by email after submitting to the /accounts/forgot-password route
+      operationId: validateResetToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  example: "3c7f8d9c4cb348ff95a0b74a1452aa24fc9611bb76768bb9eafeeb826ddae2935f1880bc7713318f"
+              required:
+                - token
+      responses:
+        "200":
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Token is valid"
+        "400":
+          description: Token is invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalid token"
+  /accounts/reset-password:
+    post:
+      summary: Reset the password for an account
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                  example: "3c7f8d9c4cb348ff95a0b74a1452aa24fc9611bb76768bb9eafeeb826ddae2935f1880bc7713318f"
+                password:
+                  type: string
+                  example: "newPass123"
+                confirmPassword:
+                  type: string
+                  example: "newPass123"
+              required:
+                - token
+                - password
+                - confirmPassword
+      responses:
+        "200":
+          description: Password reset was successful so you can now login to the account with the new password
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Password reset successful, you can now login"
+        "400":
+          description: Password reset failed due to an invalid token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Invalid token"
+  /accounts:
+    get:
+      summary: Get a list of all accounts
+      description: Restricted to admin users.
+      operationId: getAllAccounts
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: An array of all accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      example: "5eb12e197e06a76ccdefc121"
+                    title:
+                      type: string
+                      example: "Mr"
+                    firstName:
+                      type: string
+                      example: "Jason"
+                    lastName:
+                      type: string
+                      example: "Watmore"
+                    email:
+                      type: string
+                      example: "jason@example.com"
+                    role:
+                      type: string
+                      example: "Admin"
+                    created:
+                      type: string
+                      example: "2020-05-05T09:12:57.848Z"
+                    updated:
+                      type: string
+                      example: "2020-05-08T03:11:21.553Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+    post:
+      summary: Create a new account
+      description: Restricted to admin users.
+      operationId: createAccount
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: "Mr"
+                firstName:
+                  type: string
+                  example: "Jason"
+                lastName:
+                  type: string
+                  example: "Watmore"
+                email:
+                  type: string
+                  example: "jason@example.com"
+                password:
+                  type: string
+                  example: "pass123"
+                confirmPassword:
+                  type: string
+                  example: "pass123"
+                role:
+                  type: string
+                  enum: [Admin, User]
+              required:
+                - title
+                - firstName
+                - lastName
+                - email
+                - password
+                - confirmPassword
+                - role
+      responses:
+        "200":
+          description: Account created successfully, verification is not required for accounts created with this endpoint. The details of the new account are returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "5eb12e197e06a76ccdefc121"
+                  title:
+                    type: string
+                    example: "Mr"
+                  firstName:
+                    type: string
+                    example: "Jason"
+                  lastName:
+                    type: string
+                    example: "Watmore"
+                  email:
+                    type: string
+                    example: "jason@example.com"
+                  role:
+                    type: string
+                    example: "Admin"
+                  created:
+                    type: string
+                    example: "2020-05-05T09:12:57.848Z"
+        "400":
+          description: Email is already registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Email 'jason@example.com' is already registered"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+  /accounts/{id}:
+    parameters:
+      - in: path
+        name: id
+        description: Account id
+        required: true
+        example: "5eb12e197e06a76ccdefc121"
+        schema:
+          type: string
+    get:
+      summary: Get a single account by id
+      description: Admin users can access any account, regular users are restricted to their own account.
+      operationId: getAccountById
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Details of the specified account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "5eb12e197e06a76ccdefc121"
+                  title:
+                    type: string
+                    example: "Mr"
+                  firstName:
+                    type: string
+                    example: "Jason"
+                  lastName:
+                    type: string
+                    example: "Watmore"
+                  email:
+                    type: string
+                    example: "jason@example.com"
+                  role:
+                    type: string
+                    example: "Admin"
+                  created:
+                    type: string
+                    example: "2020-05-05T09:12:57.848Z"
+                  updated:
+                    type: string
+                    example: "2020-05-08T03:11:21.553Z"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+    put:
+      summary: Update an account
+      description: Admin users can update any account including role, regular users are restricted to their own account and cannot update role.
+      operationId: updateAccount
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: "Mr"
+                firstName:
+                  type: string
+                  example: "Jason"
+                lastName:
+                  type: string
+                  example: "Watmore"
+                email:
+                  type: string
+                  example: "jason@example.com"
+                password:
+                  type: string
+                  example: "pass123"
+                confirmPassword:
+                  type: string
+                  example: "pass123"
+                role:
+                  type: string
+                  enum: [Admin, User]
+      responses:
+        "200":
+          description: Account updated successfully. The details of the updated account are returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: "5eb12e197e06a76ccdefc121"
+                  title:
+                    type: string
+                    example: "Mr"
+                  firstName:
+                    type: string
+                    example: "Jason"
+                  lastName:
+                    type: string
+                    example: "Watmore"
+                  email:
+                    type: string
+                    example: "jason@example.com"
+                  role:
+                    type: string
+                    example: "Admin"
+                  created:
+                    type: string
+                    example: "2020-05-05T09:12:57.848Z"
+                  updated:
+                    type: string
+                    example: "2020-05-08T03:11:21.553Z"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+    delete:
+      summary: Delete an account
+      description: Admin users can delete any account, regular users are restricted to their own account.
+      operationId: deleteAccount
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Account deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Account deleted successfully"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    UnauthorizedError:
+      description: Access token is missing or invalid, or the user does not have access to perform the action
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Unauthorized"
+    NotFoundError:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Not Found"
+
+================================================================================
+File: workflows\workflow.controller.js
+Size: 1.48 kB
+================================================================================
+
+//workflow.controller
+const express = require('express');
+const router = express.Router();
+const workflowService = require('./workflow.service');
+
+// Routes
+router.get('/', getAll);                              // get all workflows
+router.get('/employee/:employeeId', getByEmployeeId); // get workflows of one employee
+router.get('/:id', getById);                          // get workflow by id
+router.post('/', create);                             // add new workflow
+router.put('/:id', update);                           // update workflow
+
+console.log("✅ Workflows controller loaded");
+
+module.exports = router;
+
+// ------------------ ROUTE HANDLERS ------------------
+
+function getAll(req, res, next) {
+    workflowService.getAll()
+        .then(workflows => res.json(workflows))
+        .catch(next);
+}
+
+function getByEmployeeId(req, res, next) {
+    workflowService.getByEmployeeId(req.params.employeeId)
+        .then(workflows => res.json(workflows))
+        .catch(next);
+}
+
+function getById(req, res, next) {
+    workflowService.getById(req.params.id)
+        .then(workflow => res.json(workflow))
+        .catch(next);
+}
+
+function create(req, res, next) {
+    workflowService.create(req.body)
+        .then(workflow => res.json(workflow))
+        .catch(next);
+}
+
+function update(req, res, next) {
+    workflowService.update(req.params.id, req.body)
+        .then(workflow => res.json(workflow))
+        .catch(next);
+}
+
+
+================================================================================
+File: workflows\workflow.model.js
+Size: 678 B
+================================================================================
+
+// workflow.model.js
+module.exports = (sequelize, DataTypes) => {
+  const Workflow = sequelize.define('Workflow', {
+    type: { type: DataTypes.STRING, allowNull: false },
+    details: { type: DataTypes.STRING, allowNull: false },
+    status: { 
+    type: DataTypes.ENUM('Pending', 'Approved', 'Rejected'), 
+    allowNull: false, 
+    defaultValue: 'Pending' 
+    },
+     employeeId: { type: DataTypes.INTEGER, allowNull: false },   // 👈 required FK
+     requestId: { type: DataTypes.INTEGER, allowNull: true }      // 👈 optional FK
+  });
+
+  // ❌ remove Workflow.associate
+  // Because associations are already defined in db.js
+
+  return Workflow;
+};
+
+
+================================================================================
+File: workflows\workflow.service.js
+Size: 3.95 kB
+================================================================================
+
+//workflow.service
+const db = require('_helpers/db');
+
+module.exports = {
+    getAll,
+    getByEmployeeId,
+    getById,
+    create,
+    update
+};
+
+// ------------------ FUNCTIONS ------------------
+
+async function getAll() {
+    return await db.Workflow.findAll({
+        include: [
+            {
+                model: db.Employee,
+                as: 'employee',
+                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                include: [
+                    { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+                    { model: db.Department, as: 'department', attributes: ['name'] }
+                ]
+            },
+            {
+                model: db.Request,
+                as: 'request',
+                attributes: ['id', 'type', 'status', 'items']
+            }
+        ],
+        order: [['id', 'ASC']]
+    });
+}
+
+async function getById(id) {
+    return await db.Workflow.findByPk(id, {
+        include: [
+            {
+                model: db.Employee,
+                as: 'employee',
+                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                include: [
+                    { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+                    { model: db.Department, as: 'department', attributes: ['name'] }
+                ]
+            },
+            {
+                model: db.Request,
+                as: 'request',
+                attributes: ['id', 'type', 'status', 'items']
+            }
+        ]
+    });
+}
+
+async function getByEmployeeId(employeeId) {
+    const employee = await db.Employee.findOne({ where: { employeeId } });
+    if (!employee) throw new Error('Employee not found');
+
+    return await db.Workflow.findAll({
+        where: { employeeId: employee.id },
+        include: [
+            {
+                model: db.Employee,
+                as: 'employee',
+                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                include: [
+                    { model: db.Position, as: 'position', attributes: ['name'] }, // add this
+                    { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+                    { model: db.Department, as: 'department', attributes: ['name'] }
+                ]
+            },
+            {
+                model: db.Request,
+                as: 'request',
+                attributes: ['id', 'type', 'status', 'items']
+            }
+        ],
+        order: [['id', 'ASC']]
+    });
+}
+
+async function create(params) {
+    const { type, details, status, employeeId, requestId } = params;
+
+    if (!employeeId) throw new Error('Employee is required');
+
+    const employee = await db.Employee.findByPk(employeeId, {
+        include: [{ model: db.Account, as: 'account' }]
+    });
+    if (!employee) throw new Error('Employee not found');
+
+    const workflow = await db.Workflow.create({
+        type,
+        details,
+        status: status || 'Pending',
+        employeeId: employee.id,
+        requestId: requestId || null
+    });
+
+    return await getById(workflow.id);
+}
+
+async function update(id, params) {
+    const workflow = await db.Workflow.findByPk(id, {
+        include: [{ model: db.Request, as: 'request' }]
+    });
+    if (!workflow) throw new Error('Workflow not found');
+
+    Object.assign(workflow, params);
+    await workflow.save();
+
+    // 🔑 Sync request status if workflow has requestId
+    if (workflow.requestId && params.status) {
+        const request = await db.Request.findByPk(workflow.requestId);
+        if (request) {
+            request.status = params.status;
+            await request.save();
+        }
+    }
+
+    return await getById(workflow.id);
+}
+
+
+================================================================================
+File: _helpers\db.js
+Size: 10.07 kB
+================================================================================
+
+require('dotenv').config();
+const { Sequelize, DataTypes } = require('sequelize');
+
+const db = {};
+
+initialize();
+
+async function initialize() {
+  const host = process.env.DB_HOST || 'localhost';
+  const port = process.env.DB_PORT || 5432;
+  const user = process.env.DB_USER || 'postgres';
+  const password = process.env.DB_PASSWORD || 'postgres';
+  const database = process.env.DB_NAME || 'group_project';
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  try {
+    console.log(`🔗 Connecting to PostgreSQL database "${database}" at ${host}:${port}...`);
+
+    // ✅ Initialize Sequelize for PostgreSQL
+    const sequelize = new Sequelize(database, user, password, {
+    host,
+    port,
+    dialect: 'postgres',
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false, // needed for Render
+      },
+    },
+    logging: false,
+  });
+
+
+    // ===============================
+    // 🔹 Initialize Models
+    // ===============================
+    db.Account = require('../accounts/account.model')(sequelize, DataTypes);
+    db.RefreshToken = require('../accounts/refresh-token.model')(sequelize, DataTypes);
+    db.Employee = require('../employees/employee.model')(sequelize, DataTypes);
+    db.Request = require('../requests/request.model')(sequelize, DataTypes);
+    db.Workflow = require('../workflows/workflow.model')(sequelize, DataTypes);
+    db.Department = require('../departments/department.model')(sequelize, DataTypes);
+    db.Position = require('../positions/position.model')(sequelize, DataTypes);
+
+    // ===============================
+    // 🔹 Define Relationships
+    // ===============================
+    db.Account.hasMany(db.RefreshToken, { onDelete: 'CASCADE' });
+    db.RefreshToken.belongsTo(db.Account);
+
+    db.Account.hasMany(db.Employee, { foreignKey: 'accountId', as: 'employees', onDelete: 'CASCADE' });
+    db.Employee.belongsTo(db.Account, { foreignKey: 'accountId', as: 'account' });
+
+    db.Employee.hasMany(db.Workflow, { foreignKey: 'employeeId', as: 'workflows', onDelete: 'CASCADE' });
+    db.Workflow.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+    db.Request.hasMany(db.Workflow, { foreignKey: 'requestId', as: 'workflows', onDelete: 'CASCADE' });
+    db.Workflow.belongsTo(db.Request, { foreignKey: 'requestId', as: 'request' });
+
+    db.Employee.hasMany(db.Request, { foreignKey: 'employeeId', as: 'requests', onDelete: 'CASCADE' });
+    db.Request.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+    db.Department.hasMany(db.Employee, { foreignKey: 'departmentId', as: 'employees', onDelete: 'SET NULL' });
+    db.Employee.belongsTo(db.Department, { foreignKey: 'departmentId', as: 'department' });
+
+    db.Position.hasMany(db.Employee, { foreignKey: 'positionId', as: 'employees', onDelete: 'SET NULL' });
+    db.Employee.belongsTo(db.Position, { foreignKey: 'positionId', as: 'position' });
+
+    // ===============================
+    // 🔹 Sync Database (Safe for Production)
+    // ===============================
+    await sequelize.sync({ alter: isDev }); // Only auto-alter tables in development
+    console.log(`✅ PostgreSQL connected & synced (alter=${isDev})`);
+
+    // Attach Sequelize instance and models
+    db.sequelize = sequelize;
+    db.Sequelize = Sequelize;
+  } catch (err) {
+    console.error('❌ Database initialization failed:', err);
+    process.exit(1);
+  }
+}
+
+module.exports = db;
+
+
+
+
+
+
+
+
+
+
+
+// for the mysql to work
+// //const config = require('config.json');
+// require('dotenv').config();
+// const mysql = require('mysql2/promise');
+// const { Sequelize, DataTypes } = require('sequelize');
+
+// const db = {};
+
+// initialize();
+
+// async function initialize() {
+//   const host = process.env.DB_HOST;
+//   const port = process.env.DB_PORT || 3306;
+//   const user = process.env.DB_USER;
+//   const password = process.env.DB_PASSWORD;
+//   const database = process.env.DB_NAME;
+
+//   try {
+//       console.log(`🔗 Connecting to database ${database} at ${host}:${port}...`);
+
+//       // Initialize Sequelize
+//       const sequelize = new Sequelize(database, user, password, {
+//         host,
+//         port,
+//         dialect: 'mysql',
+//         logging: false, // turn on for debugging
+//   });
+
+//   // init models
+//   db.Account = require('../accounts/account.model')(sequelize, DataTypes);
+//   db.RefreshToken = require('../accounts/refresh-token.model')(sequelize, DataTypes);
+//   db.Employee = require('../employees/employee.model')(sequelize, DataTypes);
+//   db.Request = require('../requests/request.model')(sequelize, DataTypes);
+//   db.Workflow = require('../workflows/workflow.model')(sequelize, DataTypes);
+//   db.Department = require('../departments/department.model')(sequelize, DataTypes);
+//   db.Position = require('../positions/position.model')(sequelize, DataTypes);
+
+//   // ===============================
+//   // 🔗 Define Relationships
+//   // ===============================
+
+//   // Account ↔ RefreshToken
+//   db.Account.hasMany(db.RefreshToken, { onDelete: 'CASCADE' });
+//   db.RefreshToken.belongsTo(db.Account);
+
+//   // Account ↔ Employee
+//   db.Account.hasMany(db.Employee, { foreignKey: 'accountId', as: 'employees', onDelete: 'CASCADE' });
+//   db.Employee.belongsTo(db.Account, { foreignKey: 'accountId', as: 'account' });
+
+//   // Employee ↔ Workflow
+//   db.Employee.hasMany(db.Workflow, { foreignKey: 'employeeId', as: 'workflows', onDelete: 'CASCADE' });
+//   db.Workflow.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+//   // Request ↔ Workflow
+//   db.Request.hasMany(db.Workflow, { foreignKey: 'requestId', as: 'workflows', onDelete: 'CASCADE' });
+//   db.Workflow.belongsTo(db.Request, { foreignKey: 'requestId', as: 'request' });
+
+//   // Employee ↔ Request
+//   db.Employee.hasMany(db.Request, { foreignKey: 'employeeId', as: 'requests', onDelete: 'CASCADE' });
+//   db.Request.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+//   // Department ↔ Employee
+//   db.Department.hasMany(db.Employee, { foreignKey: 'departmentId', as: 'employees', onDelete: 'SET NULL' });
+//   db.Employee.belongsTo(db.Department, { foreignKey: 'departmentId', as: 'department' });
+  
+//   // Position ↔ Employee
+//   db.Position.hasMany(db.Employee, { foreignKey: 'positionId', as: 'employees', onDelete: 'SET NULL' });
+//   db.Employee.belongsTo(db.Position, { foreignKey: 'positionId', as: 'position' });
+    
+//   //await sequelize.sync({ alter: true });
+  
+//   // ===============================
+//     // ✅ Sync database (safe for production)
+//     // ===============================
+//     // Use alter: true or force: true only in development
+//     const isDev = process.env.NODE_ENV !== 'production';
+//     await sequelize.sync({ alter: isDev }); // alters tables in dev, but not prod
+//     console.log(`✅ Sequelize synced. (alter=${isDev})`);
+
+//     // Attach Sequelize instance and models
+//     db.sequelize = sequelize;
+//     db.Sequelize = Sequelize;
+
+//   } catch (err) {
+//     console.error('❌ Database initialization failed:', err);
+//     process.exit(1); // stop server if DB fails
+//   }
+// }
+
+// module.exports = db;
+
+
+// const config = require('../config.json');   // ✅ adjust path if needed
+// const { Sequelize, DataTypes } = require('sequelize');
+
+// const db = {};
+
+// initialize();
+
+// async function initialize() {
+//   // pull DB settings directly from config.json
+//   const dbConfig = config.database;
+
+//   const sequelize = new Sequelize(dbConfig.database, dbConfig.user, dbConfig.password, {
+//     host: dbConfig.host,
+//     port: dbConfig.port || 3306,
+//     dialect: 'mysql',
+//     logging: false
+//   });
+
+//   // init models
+//   db.Account = require('../accounts/account.model')(sequelize, DataTypes);
+//   db.RefreshToken = require('../accounts/refresh-token.model')(sequelize, DataTypes);
+//   db.Employee = require('../employees/employee.model')(sequelize, DataTypes);
+//   db.Request = require('../requests/request.model')(sequelize, DataTypes);
+//   db.Workflow = require('../workflows/workflow.model')(sequelize, DataTypes);
+//   db.Department = require('../departments/department.model')(sequelize, DataTypes);
+//   db.Position = require('../positions/position.model')(sequelize, DataTypes);
+
+//   // ===============================
+//   // 🔗 Define Relationships
+//   // ===============================
+
+//   db.Account.hasMany(db.RefreshToken, { onDelete: 'CASCADE' });
+//   db.RefreshToken.belongsTo(db.Account);
+
+//   db.Account.hasMany(db.Employee, { foreignKey: 'accountId', as: 'employees', onDelete: 'CASCADE' });
+//   db.Employee.belongsTo(db.Account, { foreignKey: 'accountId', as: 'account' });
+
+//   db.Employee.hasMany(db.Workflow, { foreignKey: 'employeeId', as: 'workflows', onDelete: 'CASCADE' });
+//   db.Workflow.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+//   db.Request.hasMany(db.Workflow, { foreignKey: 'requestId', as: 'workflows', onDelete: 'CASCADE' });
+//   db.Workflow.belongsTo(db.Request, { foreignKey: 'requestId', as: 'request' });
+
+//   db.Employee.hasMany(db.Request, { foreignKey: 'employeeId', as: 'requests', onDelete: 'CASCADE' });
+//   db.Request.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+//   db.Department.hasMany(db.Employee, { foreignKey: 'departmentId', as: 'employees', onDelete: 'SET NULL' });
+//   db.Employee.belongsTo(db.Department, { foreignKey: 'departmentId', as: 'department' });
+
+//   db.Position.hasMany(db.Employee, { foreignKey: 'positionId', as: 'employees', onDelete: 'SET NULL' });
+//   db.Employee.belongsTo(db.Position, { foreignKey: 'positionId', as: 'position' });
+
+//   // sync database
+//   await sequelize.sync({ alter: true });
+// }
+
+// module.exports = db;
+
+
+================================================================================
+File: _helpers\role.js
+Size: 60 B
+================================================================================
+
+module.exports = {
+    Admin: 'Admin',
+    User: 'User'
+}
+
+================================================================================
+File: _helpers\send-email.js
+Size: 328 B
+================================================================================
+
+const nodemailer = require('nodemailer');
+const config = require('config.json');
+
+module.exports = sendEmail;
+
+async function sendEmail({ to, subject, html, from = config.emailFrom }) {
+    const transporter = nodemailer.createTransport(config.smtpOptions);
+    await transporter.sendMail({ from, to, subject, html });
+}
+
+================================================================================
+File: _helpers\swagger.js
+Size: 305 B
+================================================================================
+
+const express = require('express');
+const router = express.Router();
+const swaggerUi = require('swagger-ui-express');
+const YAML = require('yamljs');
+const swaggerDocument = YAML.load('./swagger.yaml');
+
+router.use('/', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+module.exports = router;
+
+================================================================================
+File: _middleware\authorize.js
+Size: 1.31 kB
+================================================================================
+
+const jwt = require('express-jwt');
+const { secret } = require('config.json');
+const db = require('_helpers/db');
+
+module.exports = authorize;
+
+function authorize(roles = []) {
+    if (typeof roles === 'string') {
+        roles = [roles];
+    }
+
+    return [
+        // authenticate JWT token
+        jwt({ secret, algorithms: ['HS256'] }),
+
+        // authorize based on user role
+        async (req, res, next) => {
+            console.log("🔑 Decoded JWT payload:", req.user);
+
+            const account = await db.Account.findByPk(req.user.id);
+            console.log("🗄️ Account from DB:", account ? { id: account.id, role: account.role, email: account.email } : null);
+
+            if (!account || (roles.length && !roles.includes(account.role))) {
+                console.log("❌ Unauthorized - reason: ", !account ? "Account not found" : "Role mismatch");
+                return res.status(401).json({ message: 'Unauthorized' });
+            }
+
+            req.user.role = account.role;
+            const refreshTokens = await account.getRefreshTokens();
+            req.user.ownsToken = token => !!refreshTokens.find(x => x.token === token);
+            
+            console.log("✅ Authorized as:", account.role);
+            next();
+        }
+    ];
+}
+
+
+================================================================================
+File: _middleware\error-handler.js
+Size: 621 B
+================================================================================
+
+module.exports = errorHandler;
+
+function errorHandler(err, req, res, next) {
+    switch (true) {
+        case typeof err === 'string':
+            // custom application error
+            const is404 = err.toLowerCase().endsWith('not found');
+            const statusCode = is404 ? 404 : 400;
+            return res.status(statusCode).json({ message: err });
+        case err.name === 'UnauthorizedError':
+            // jwt authentication error
+            return res.status(401).json({ message: 'Unauthorized' });
+        default:
+            return res.status(500).json({ message: err.message });
+    }
+}
+
+================================================================================
+File: _middleware\validate-request.js
+Size: 504 B
+================================================================================
+
+module.exports = validateRequest;
+
+function validateRequest(req, next, schema) {
+    const options = {
+        abortEarly: false, // include all errors
+        allowUnknown: true, // ignore unknown props
+        stripUnknown: true // remove unknown props
+    };
+    const { error, value } = schema.validate(req.body, options);
+    if (error) {
+        next(`Validation error: ${error.details.map(x => x.message).join(', ')}`);
+    } else {
+        req.body = value;
+        next();
+    }
+}

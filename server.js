@@ -25,6 +25,11 @@ app.use('/positions', require('./positions/positions.controller'));
 // swagger docs route
 app.use('/api-docs', require('_helpers/swagger'));
 
+app.use(cors({
+    origin: ['https://your-frontend-domain.com'], // or frontend dev URL
+    credentials: true // ✅ allows sending cookies
+}));
+
 // global error handler
 app.use(errorHandler);
 

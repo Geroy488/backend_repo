@@ -257,8 +257,10 @@ function deactivate(req, res, next) { // Renamed from _delete
 function setTokenCookie(res, token) {
     // create cookie with refresh token that expires in 7 days
     const cookieOptions = {
-        httpOnly: true,
-        expires: new Date(Date.now() + 7*24*60*60*1000)
-    };
+    httpOnly: true,
+    sameSite: 'none',
+    secure: true, // ✅ required for cross-site cookies
+    expires: new Date(Date.now() + 7*24*60*60*1000)
+};
     res.cookie('refreshToken', token, cookieOptions);
 }
