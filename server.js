@@ -10,7 +10,8 @@ const employeesController = require('./employees/employees.controller');
 // ✅ CORS must be set before any routes
 app.use(cors({
   origin: [
-    'https://frontend-repo-huhmk5jqy-charizms-projects.vercel.app', // your live frontend
+    'https://frontend-repo-huhmk5jqy-charizms-projects.vercel.app',
+    'https://frontend-repo-dvwg9y25f-charizms-projects.vercel.app'
   ],
   credentials: true
 }));
