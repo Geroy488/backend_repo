@@ -7,12 +7,20 @@ const cors = require('cors');
 const errorHandler = require('_middleware/error-handler');
 const employeesController = require('./employees/employees.controller');
 
+// ✅ CORS must be set before any routes
+app.use(cors({
+  origin: [
+    'https://frontend-repo-huhmk5jqy-charizms-projects.vercel.app', // your live frontend
+  ],
+  credentials: true
+}));
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(cookieParser());
 
 // allow cors requests from any origin and with credentials
-app.use(cors({ origin: (origin, callback) => callback(null, true), credentials: true }));
+//app.use(cors({ origin: (origin, callback) => callback(null, true), credentials: true }));
 
 // api routes
 app.use('/accounts', require('./accounts/accounts.controller'));
@@ -24,11 +32,6 @@ app.use('/positions', require('./positions/positions.controller'));
 
 // swagger docs route
 app.use('/api-docs', require('_helpers/swagger'));
-
-app.use(cors({
-    origin: ['https://frontend-repo-cwfsbohms-charizms-projects.vercel.app'], // or frontend dev URL
-    credentials: true // ✅ allows sending cookies
-}));
 
 // global error handler
 app.use(errorHandler);
