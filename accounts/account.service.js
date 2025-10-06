@@ -93,7 +93,7 @@ async function register(params, origin) {
 
 
     await account.save();
-    sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
+    //sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
 
     return basicDetails(account);
 }
