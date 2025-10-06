@@ -7,13 +7,21 @@ const cors = require('cors');
 const errorHandler = require('_middleware/error-handler');
 const employeesController = require('./employees/employees.controller');
 
-// ✅ CORS must be set before any routes
+const allowedOrigins = [
+  'https://frontend-repo-inky.vercel.app',
+  'http://localhost:4200' // for local development
+];
+
 app.use(cors({
-  origin: [
-    'https://frontend-repo-inky.vercel.app'  // ← NEW frontend URL
-  ],
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
+
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
