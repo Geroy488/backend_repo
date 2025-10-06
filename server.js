@@ -11,7 +11,8 @@ const employeesController = require('./employees/employees.controller');
 app.use(cors({
   origin: [
     'https://frontend-repo-huhmk5jqy-charizms-projects.vercel.app',
-    'https://frontend-repo-dvwg9y25f-charizms-projects.vercel.app'
+    'https://frontend-repo-dvwg9y25f-charizms-projects.vercel.app',
+    'https://frontend-repo-h4y4h5t9u-charizms-projects.vercel.app'  // ← NEW frontend URL
   ],
   credentials: true
 }));
