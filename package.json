@@ -28,6 +28,7 @@
         "nodemailer": "^6.4.11",
         "pg": "^8.16.3",
         "pg-hstore": "^2.3.4",
+        "resend": "^6.1.2",
         "rootpath": "^0.1.2",
         "sequelize": "^6.3.4",
         "swagger-ui-express": "^4.1.4",
