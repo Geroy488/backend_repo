@@ -337,19 +337,19 @@ async function getNextEmployeeId() {
 
 //new for gmail verification
 async function sendVerificationEmail(account, origin) {
-    const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
+  const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
 
-    await sendEmail({
-        to: process.env.EMAIL_FROM, // 👈 your Gmail receives the verification
-        subject: 'New User Verification Request',
-        html: `
-            <h4>New User Registration</h4>
-            <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
-            <p>Click below to verify their account:</p>
-            <p><a href="${verifyUrl}">${verifyUrl}</a></p>
-        `
-    });
-}
+  await sendEmail({
+    to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
+    subject: 'New User Verification Request',
+    html: `
+      <h4>New User Registration</h4>
+      <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
+      <p>Click below to verify their account:</p>
+      <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+    `,
+  });
+}   
 
 async function sendAlreadyRegisteredEmail(email, origin) {
     let message;
