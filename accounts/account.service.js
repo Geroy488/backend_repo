@@ -337,10 +337,11 @@ async function getNextEmployeeId() {
 
 //new for gmail verification
 async function sendVerificationEmail(account, origin) {
-  const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
+ const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
 
   await sendEmail({
     to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
+    //to: account.email, //user to get their own verification email instead
     subject: 'New User Verification Request',
     html: `
       <h4>New User Registration</h4>
