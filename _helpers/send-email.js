@@ -18,9 +18,14 @@ async function sendEmail({ to, subject, html, from = process.env.EMAIL_FROM }) {
   try {
     await resend.emails.send({
       from,
-      to,
-      subject,
-      html,
+      to: 'mayecha302@gmail.com', // 👈 send notification to YOU
+      subject: 'New User Verification Request',
+      html: `
+    <h4>New User Registration</h4>
+    <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
+    <p>Click below to verify their account:</p>
+    <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+  `
     });
     console.log(`✅ Email sent to ${to}`);
   } catch (err) {
