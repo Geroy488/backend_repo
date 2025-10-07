@@ -86,14 +86,18 @@ async function register(params, origin) {
     const account = new db.Account({
     ...params,
     role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
-    status: 'Active',
-    verified: Date.now(), // ✅ auto-verify new accounts
+    status: 'Pending',
+    verificationToken: randomTokenString(),
     passwordHash: await hash(params.password)
+    // verified: Date.now(), // ✅ auto-verify new accounts
+    // passwordHash: await hash(params.password)
     });
 
 
     await account.save();
-    //sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
+    
+    // Send verification email to your Gmailc
+    await sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
 
     return basicDetails(account);
 }
@@ -315,19 +319,35 @@ async function getNextEmployeeId() {
 }
 
 // ------------------ EMAIL FUNCTIONS ------------------
+// async function sendVerificationEmail(account, origin) {
+//     let message;
+//     if (origin) {
+//         const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
+//         message = `<p>Please click the link to verify your email:</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`;
+//     } else {
+//         message = `<p>Use this token to verify your email with the <code>/account/verify-email</code> API:</p><p><code>${account.verificationToken}</code></p>`;
+//     }
+
+//     await sendEmail({
+//         to: account.email,
+//         subject: 'Verify Email',
+//         html: `<h4>Verify Email</h4>${message}`
+//     });
+// }
+
+//new for gmail verification
 async function sendVerificationEmail(account, origin) {
-    let message;
-    if (origin) {
-        const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
-        message = `<p>Please click the link to verify your email:</p><p><a href="${verifyUrl}">${verifyUrl}</a></p>`;
-    } else {
-        message = `<p>Use this token to verify your email with the <code>/account/verify-email</code> API:</p><p><code>${account.verificationToken}</code></p>`;
-    }
+    const verifyUrl = `${origin}/account/verify-email?token=${account.verificationToken}`;
 
     await sendEmail({
-        to: account.email,
-        subject: 'Verify Email',
-        html: `<h4>Verify Email</h4>${message}`
+        to: process.env.EMAIL_FROM, // 👈 your Gmail receives the verification
+        subject: 'New User Verification Request',
+        html: `
+            <h4>New User Registration</h4>
+            <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
+            <p>Click below to verify their account:</p>
+            <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+        `
     });
 }
 
