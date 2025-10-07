@@ -27,18 +27,30 @@ module.exports = {
 async function authenticate({ email, password, ipAddress }) {
     const account = await db.Account.scope('withHash').findOne({ where: { email } });
 
-   if (!account || !account.isVerified || account.status !== 'Active' || !(await bcrypt.compare(password, account.passwordHash))) {
-    throw account.status !== 'Active' ? 'Account is inactive' : 'Email or password is incorrect';
-   }
-    
-    // 🚫 Block inactive accounts
-    if (account.status !== 'Active') {
-        throw 'Account is inactive';
+    // 🔹 Check if account exists
+    if (!account) throw 'Email or password is incorrect';
+
+    // 🔹 Check password
+    const passwordMatch = await bcrypt.compare(password, account.passwordHash);
+    if (!passwordMatch) throw 'Email or password is incorrect';
+
+    // 🔹 Check if email is verified
+    if (!account.verified) {
+        throw 'Please verify your email before logging in.';
     }
 
+    // 🔹 Check account status
+    if (account.status === 'Pending') {
+        throw 'Your account is not yet verified by the admin.';
+    }
+
+    if (account.status === 'Inactive') {
+        throw 'Your account has been deactivated. Please contact support.';
+    }
+
+    // ✅ Passed all checks — generate tokens
     const jwtToken = generateJwtToken(account);
     const refreshToken = generateRefreshToken(account, ipAddress);
-
     await refreshToken.save();
 
     return {
