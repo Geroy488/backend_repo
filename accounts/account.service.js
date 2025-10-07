@@ -103,12 +103,28 @@ async function register(params, origin) {
 }
 
 async function verifyEmail({ token }) {
-    const account = await db.Account.findOne({ where: { verificationToken: token } });
-    if (!account) throw 'Verification failed';
+  const account = await db.Account.findOne({ where: { verificationToken: token } });
+  if (!account) throw 'Verification failed';
 
-    account.verified = Date.now();
-    account.verificationToken = null;
-    await account.save();
+  account.verified = Date.now();
+  account.verificationToken = null;
+
+  // ✅ Automatically activate after verification
+  if (account.status === 'Pending' || account.status === 'Inactive') {
+    account.status = 'Active';
+  }
+
+  await account.save();
+
+  // ✅ Send confirmation email to the verified user
+  await sendEmail({
+    to: account.email,
+    subject: 'Your account is now verified',
+    html: `
+      <h4>Welcome, ${account.firstName}!</h4>
+      <p>Your account has been successfully verified and activated. You can now log in.</p>
+    `
+  });
 }
 
 async function forgotPassword({ email }, origin) {
