@@ -23,90 +23,120 @@ module.exports = {
     getAvailable   // 👈 added
 };
 
-// ------------------ HELPER FUNCTIONS ------------------
-
-// Password compare helper
-async function compare(password, hash) {
-    return await bcrypt.compare(password, hash);
-}
-
 // ------------------ AUTHENTICATION ------------------
 async function authenticate({ email, password, ipAddress }) {
-    try {
-        const account = await db.Account.findOne({ where: { email } });
+    const account = await db.Account.scope('withHash').findOne({ where: { email } });
 
-        if (!account) throw new Error('Email or password is incorrect.');
+    // 🔹 Check if account exists
+    if (!account) throw 'Email or password is incorrect';
 
-        // Compare password
-        const passwordMatches = await compare(password, account.passwordHash);
-        if (!passwordMatches) throw new Error('Email or password is incorrect.');
+    // 🔹 Check password
+    const passwordMatch = await bcrypt.compare(password, account.passwordHash);
+    if (!passwordMatch) throw 'Email or password is incorrect';
 
-        // Check if email is verified
-        if (!account.verified) {
-            throw new Error('Please verify your email before logging in.');
-        }
-
-        // Check if account is inactive
-        if (account.status === 'Inactive') {
-            throw new Error('Your account has been deactivated. Please contact support.');
-        }
-
-        // Passed all checks — generate tokens
-        const jwtToken = generateJwtToken(account);
-        const refreshToken = generateRefreshToken(account, ipAddress);
-        await refreshToken.save();
-
-        return {
-            ...basicDetails(account),
-            jwtToken,
-            refreshToken: refreshToken.token
-        };
-
-    } catch (err) {
-        console.error('Authentication error:', err.message || err);
-        throw err;  // Let your Express error handler return proper response
+    // 🔹 Check if email is verified
+    if (!account.verified) {
+        throw 'Please verify your email before logging in.';
     }
+
+    // 🔹 Check account status
+    if (account.status === 'Pending') {
+        throw 'Your account is not yet verified by the admin.';
+    }
+
+    if (account.status === 'Inactive') {
+        throw 'Your account has been deactivated. Please contact support.';
+    }
+
+    // ✅ Passed all checks — generate tokens
+    const jwtToken = generateJwtToken(account);
+    const refreshToken = generateRefreshToken(account, ipAddress);
+    await refreshToken.save();
+
+    return {
+        ...basicDetails(account),
+        jwtToken,
+        refreshToken: refreshToken.token
+    };
 }
 
+async function refreshToken({ token, ipAddress }) {
+    const refreshToken = await getRefreshToken(token);
+    const account = await refreshToken.getAccount();
+
+    const newRefreshToken = generateRefreshToken(account, ipAddress);
+    refreshToken.revoked = Date.now();
+    refreshToken.revokedByIp = ipAddress;
+    refreshToken.replacedByToken = newRefreshToken.token;
+
+    await refreshToken.save();
+    await newRefreshToken.save();
+
+    return {
+        ...basicDetails(account),
+        jwtToken: generateJwtToken(account),
+        refreshToken: newRefreshToken.token
+    };
+}
+
+async function revokeToken({ token, ipAddress }) {
+    const refreshToken = await getRefreshToken(token);
+    refreshToken.revoked = Date.now();
+    refreshToken.revokedByIp = ipAddress;
+    await refreshToken.save();
+}
 
 // ------------------ ACCOUNT MANAGEMENT ------------------
 
 // REGISTER (user self-register)
 async function register(params, origin) {
-    // check if email already exists
-    const existing = await db.Account.findOne({ where: { email: params.email } });
-    if (existing) throw 'Email "' + params.email + '" is already registered';
+    if (await db.Account.findOne({ where: { email: params.email } })) {
+        sendAlreadyRegisteredEmail(params.email, origin).catch(err => console.error(err));
+        return;
+    }
 
-    // create account with "Pending" status until admin or user verifies
     const account = new db.Account({
-        title: params.title,
-        firstName: params.firstName,
-        lastName: params.lastName,
-        email: params.email,
-        passwordHash: await hash(params.password),
-        role: Role.User,
-        verificationToken: randomTokenString(),
-        status: 'Pending'
+    ...params,
+    role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
+    status: 'Pending',
+    verificationToken: randomTokenString(),
+    passwordHash: await hash(params.password)
+    // verified: Date.now(), // ✅ auto-verify new accounts
+    // passwordHash: await hash(params.password)
     });
 
+
     await account.save();
+    
+    // Send verification email to your Gmailc
+    await sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
 
-    // send verification email
-    await sendVerificationEmail(account, origin);
-
-    return account;
+    return basicDetails(account);
 }
 
 async function verifyEmail({ token }) {
-    const account = await db.Account.findOne({ where: { verificationToken: token } });
+  const account = await db.Account.findOne({ where: { verificationToken: token } });
+  if (!account) throw 'Verification failed';
 
-    if (!account) throw 'Verification failed — invalid token';
+  account.verified = Date.now();
+  account.verificationToken = null;
 
-    // ✅ mark as verified and active
-    account.verified = Date.now();
-    account.verificationToken = null;
+  // ✅ Automatically activate after verification
+  if (account.status === 'Pending' || account.status === 'Inactive') {
     account.status = 'Active';
-    await account.save();   
+  }
+
+  await account.save();
+
+  // ✅ Send confirmation email to the verified user
+  await sendEmail({
+    to: account.email,
+    subject: 'Your account is now verified',
+    html: `
+      <h4>Welcome, ${account.firstName}!</h4>
+      <p>Your account has been successfully verified and activated. You can now log in.</p>
+    `
+  });
 }
 
 async function forgotPassword({ email }, origin) {
@@ -293,12 +323,12 @@ function randomTokenString() {
 
 // Basic account details
 function basicDetails(account) {
-    const { id, title, firstName, lastName, email, role, created, updated, verified, status } = account;
-    return { id, title, firstName, lastName, email, role, created, updated, isVerified: !!verified, status };
+    const { id, title, firstName, lastName, email, role, created, updated, isVerified, status } = account;
+    return { id, title, firstName, lastName, email, role, created, updated, isVerified, status };
 }
 
 // ------------------ EMPLOYEE HELPER ------------------
-async function ensureEmployeeExists (account) {
+async function ensureEmployeeExists(account) {
         await db.Employee.create({
             accountId: account.id,
             employeeId: await getNextEmployeeId(),
@@ -315,6 +345,7 @@ async function getNextEmployeeId() {
     });
     return last ? last.employeeId + 1 : 1;
 }
+
 // ------------------ EMAIL FUNCTIONS ------------------
 // async function sendVerificationEmail(account, origin) {
 //     let message;
@@ -332,40 +363,22 @@ async function getNextEmployeeId() {
 //     });
 // }
 
-//new for gmail verification where it will send to me
-// async function sendVerificationEmail(account, origin) {
-//  const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
-
-//   await sendEmail({
-//     to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
-//     to: account.email, //user to get their own verification email instead
-//     subject: 'New User Verification Request',
-//     html: `
-//       <h4>New User Registration</h4>
-//       <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
-//       <p>Click below to verify their account:</p>
-//       <p><a href="${verifyUrl}">${verifyUrl}</a></p>
-//     `,
-//   });
-// }   
-
-// Send verification email to the user's own Gmail
+//new for gmail verification
 async function sendVerificationEmail(account, origin) {
-  const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
+ const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
 
   await sendEmail({
-    to: account.email, // 👈 send to the user's own email
-    subject: 'Verify Your Email',
+    to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
+    //to: account.email, //user to get their own verification email instead
+    subject: 'New User Verification Request',
     html: `
-      <h4>Hi ${account.firstName},</h4>
-      <p>Thank you for registering! Please verify your email address by clicking the link below:</p>
+      <h4>New User Registration</h4>
+      <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
+      <p>Click below to verify their account:</p>
       <p><a href="${verifyUrl}">${verifyUrl}</a></p>
-      <br>
-      <p>If you did not create this account, please ignore this email.</p>
     `,
   });
-}
-
+}   
 
 async function sendAlreadyRegisteredEmail(email, origin) {
     let message;
