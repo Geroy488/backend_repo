@@ -23,62 +23,51 @@ module.exports = {
     getAvailable   // 👈 added
 };
 
+// ------------------ HELPER FUNCTIONS ------------------
+
+// Password compare helper
+async function compare(password, hash) {
+    return await bcrypt.compare(password, hash);
+}
+
 // ------------------ AUTHENTICATION ------------------
 async function authenticate({ email, password, ipAddress }) {
-   const account = await db.Account.findOne({ where: { email } });
+    try {
+        const account = await db.Account.findOne({ where: { email } });
 
-if (!account || !(await compare(password, account.passwordHash))) {
-    throw 'Email or password is incorrect.';
+        if (!account) throw new Error('Email or password is incorrect.');
+
+        // Compare password
+        const passwordMatches = await compare(password, account.passwordHash);
+        if (!passwordMatches) throw new Error('Email or password is incorrect.');
+
+        // Check if email is verified
+        if (!account.verified) {
+            throw new Error('Please verify your email before logging in.');
+        }
+
+        // Check if account is inactive
+        if (account.status === 'Inactive') {
+            throw new Error('Your account has been deactivated. Please contact support.');
+        }
+
+        // Passed all checks — generate tokens
+        const jwtToken = generateJwtToken(account);
+        const refreshToken = generateRefreshToken(account, ipAddress);
+        await refreshToken.save();
+
+        return {
+            ...basicDetails(account),
+            jwtToken,
+            refreshToken: refreshToken.token
+        };
+
+    } catch (err) {
+        console.error('Authentication error:', err.message || err);
+        throw err;  // Let your Express error handler return proper response
+    }
 }
 
-// 🔹 Only check email verification now
-if (!account.verified) {
-    throw 'Please verify your email before logging in.';
-}
-
-// Optional: still allow admin to deactivate manually
-if (account.status === 'Inactive') {
-    throw 'Your account has been deactivated. Please contact support.';
-}
-
-
-    // ✅ Passed all checks — generate tokens
-    const jwtToken = generateJwtToken(account);
-    const refreshToken = generateRefreshToken(account, ipAddress);
-    await refreshToken.save();
-
-    return {
-        ...basicDetails(account),
-        jwtToken,
-        refreshToken: refreshToken.token
-    };
-}
-
-async function refreshToken({ token, ipAddress }) {
-    const refreshToken = await getRefreshToken(token);
-    const account = await refreshToken.getAccount();
-
-    const newRefreshToken = generateRefreshToken(account, ipAddress);
-    refreshToken.revoked = Date.now();
-    refreshToken.revokedByIp = ipAddress;
-    refreshToken.replacedByToken = newRefreshToken.token;
-
-    await refreshToken.save();
-    await newRefreshToken.save();
-
-    return {
-        ...basicDetails(account),
-        jwtToken: generateJwtToken(account),
-        refreshToken: newRefreshToken.token
-    };
-}
-
-async function revokeToken({ token, ipAddress }) {
-    const refreshToken = await getRefreshToken(token);
-    refreshToken.revoked = Date.now();
-    refreshToken.revokedByIp = ipAddress;
-    await refreshToken.save();
-}
 
 // ------------------ ACCOUNT MANAGEMENT ------------------
 
@@ -117,7 +106,7 @@ async function verifyEmail({ token }) {
     account.verified = Date.now();
     account.verificationToken = null;
     account.status = 'Active';
-    await account.save();
+    await account.save();   
 }
 
 async function forgotPassword({ email }, origin) {
@@ -304,8 +293,8 @@ function randomTokenString() {
 
 // Basic account details
 function basicDetails(account) {
-    const { id, title, firstName, lastName, email, role, created, updated, isVerified, status } = account;
-    return { id, title, firstName, lastName, email, role, created, updated, isVerified, status };
+    const { id, title, firstName, lastName, email, role, created, updated, verified, status } = account;
+    return { id, title, firstName, lastName, email, role, created, updated, isVerified: !!verified, status };
 }
 
 // ------------------ EMPLOYEE HELPER ------------------
@@ -326,7 +315,6 @@ async function getNextEmployeeId() {
     });
     return last ? last.employeeId + 1 : 1;
 }
-
 // ------------------ EMAIL FUNCTIONS ------------------
 // async function sendVerificationEmail(account, origin) {
 //     let message;
