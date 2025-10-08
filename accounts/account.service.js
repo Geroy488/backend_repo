@@ -25,28 +25,22 @@ module.exports = {
 
 // ------------------ AUTHENTICATION ------------------
 async function authenticate({ email, password, ipAddress }) {
-    const account = await db.Account.scope('withHash').findOne({ where: { email } });
+   const account = await db.Account.findOne({ where: { email } });
 
-    // 🔹 Check if account exists
-    if (!account) throw 'Email or password is incorrect';
+if (!account || !(await compare(password, account.passwordHash))) {
+    throw 'Email or password is incorrect.';
+}
 
-    // 🔹 Check password
-    const passwordMatch = await bcrypt.compare(password, account.passwordHash);
-    if (!passwordMatch) throw 'Email or password is incorrect';
+// 🔹 Only check email verification now
+if (!account.verified) {
+    throw 'Please verify your email before logging in.';
+}
 
-    // 🔹 Check if email is verified
-    if (!account.verified) {
-        throw 'Please verify your email before logging in.';
-    }
+// Optional: still allow admin to deactivate manually
+if (account.status === 'Inactive') {
+    throw 'Your account has been deactivated. Please contact support.';
+}
 
-    // 🔹 Check account status
-    if (account.status === 'Pending') {
-        throw 'Your account is not yet verified by the admin.';
-    }
-
-    if (account.status === 'Inactive') {
-        throw 'Your account has been deactivated. Please contact support.';
-    }
 
     // ✅ Passed all checks — generate tokens
     const jwtToken = generateJwtToken(account);
@@ -90,53 +84,40 @@ async function revokeToken({ token, ipAddress }) {
 
 // REGISTER (user self-register)
 async function register(params, origin) {
-    if (await db.Account.findOne({ where: { email: params.email } })) {
-        sendAlreadyRegisteredEmail(params.email, origin).catch(err => console.error(err));
-        return;
-    }
+    // check if email already exists
+    const existing = await db.Account.findOne({ where: { email: params.email } });
+    if (existing) throw 'Email "' + params.email + '" is already registered';
 
+    // create account with "Pending" status until admin or user verifies
     const account = new db.Account({
-    ...params,
-    role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
-    status: 'Pending',
-    verificationToken: randomTokenString(),
-    passwordHash: await hash(params.password)
-    // verified: Date.now(), // ✅ auto-verify new accounts
-    // passwordHash: await hash(params.password)
+        title: params.title,
+        firstName: params.firstName,
+        lastName: params.lastName,
+        email: params.email,
+        passwordHash: await hash(params.password),
+        role: Role.User,
+        verificationToken: randomTokenString(),
+        status: 'Pending'
     });
 
-
     await account.save();
-    
-    // Send verification email to your Gmailc
-    await sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
 
-    return basicDetails(account);
+    // send verification email
+    await sendVerificationEmail(account, origin);
+
+    return account;
 }
 
 async function verifyEmail({ token }) {
-  const account = await db.Account.findOne({ where: { verificationToken: token } });
-  if (!account) throw 'Verification failed';
+    const account = await db.Account.findOne({ where: { verificationToken: token } });
 
-  account.verified = Date.now();
-  account.verificationToken = null;
+    if (!account) throw 'Verification failed — invalid token';
 
-  // ✅ Automatically activate after verification
-  if (account.status === 'Pending' || account.status === 'Inactive') {
+    // ✅ mark as verified and active
+    account.verified = Date.now();
+    account.verificationToken = null;
     account.status = 'Active';
-  }
-
-  await account.save();
-
-  // ✅ Send confirmation email to the verified user
-  await sendEmail({
-    to: account.email,
-    subject: 'Your account is now verified',
-    html: `
-      <h4>Welcome, ${account.firstName}!</h4>
-      <p>Your account has been successfully verified and activated. You can now log in.</p>
-    `
-  });
+    await account.save();
 }
 
 async function forgotPassword({ email }, origin) {
@@ -328,7 +309,7 @@ function basicDetails(account) {
 }
 
 // ------------------ EMPLOYEE HELPER ------------------
-async function ensureEmployeeExists(account) {
+async function ensureEmployeeExists (account) {
         await db.Employee.create({
             accountId: account.id,
             employeeId: await getNextEmployeeId(),
