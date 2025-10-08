@@ -363,22 +363,40 @@ async function getNextEmployeeId() {
 //     });
 // }
 
-//new for gmail verification
+//new for gmail verification where it will send to me
+// async function sendVerificationEmail(account, origin) {
+//  const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
+
+//   await sendEmail({
+//     to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
+//     to: account.email, //user to get their own verification email instead
+//     subject: 'New User Verification Request',
+//     html: `
+//       <h4>New User Registration</h4>
+//       <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
+//       <p>Click below to verify their account:</p>
+//       <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+//     `,
+//   });
+// }   
+
+// Send verification email to the user's own Gmail
 async function sendVerificationEmail(account, origin) {
- const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
+  const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
 
   await sendEmail({
-    to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
-    //to: account.email, //user to get their own verification email instead
-    subject: 'New User Verification Request',
+    to: account.email, // 👈 send to the user's own email
+    subject: 'Verify Your Email',
     html: `
-      <h4>New User Registration</h4>
-      <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
-      <p>Click below to verify their account:</p>
+      <h4>Hi ${account.firstName},</h4>
+      <p>Thank you for registering! Please verify your email address by clicking the link below:</p>
       <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+      <br>
+      <p>If you did not create this account, please ignore this email.</p>
     `,
   });
-}   
+}
+
 
 async function sendAlreadyRegisteredEmail(email, origin) {
     let message;
