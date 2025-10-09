@@ -6,7 +6,8 @@ module.exports = {
     create,
     update,
     getActiveEmployees,
-    getAllEmployees
+    getAllEmployees,
+    getByEmployeeId
 };
 
 // ------------------ FUNCTIONS ------------------
@@ -159,6 +160,28 @@ async function getActiveEmployees() {
         employeeId: e.employeeId,
         account: e.account ? { id: e.account.id, email: e.account.email } : null
     }));
+}
+
+// ✅ Fetch requests for a specific employee
+async function getByEmployeeId(employeeId) {
+  const requests = await db.Request.findAll({
+    where: { employeeId },
+    include: [
+      {
+        model: db.Employee,
+        as: 'employee',
+        attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+        include: [
+          { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+          { model: db.Department, as: 'department', attributes: ['name'] },
+          { model: db.Position, as: 'position', attributes: ['name'] }
+        ]
+      }
+    ],
+    order: [['id', 'ASC']]
+  });
+
+  return requests;
 }
 
 // ✅ Fetch all employees (active + inactive)

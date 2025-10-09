@@ -17,9 +17,19 @@ module.exports = router;
 // ------------------ ROUTE HANDLERS ------------------
 
 function getAll(req, res, next) {
+  const { employeeId } = req.query; // ✅ check if there's a query param
+
+  if (employeeId) {
+    // ✅ if employeeId provided, get requests only for that employee
+    requestService.getByEmployeeId(employeeId)
+      .then(requests => res.json(requests))
+      .catch(next);
+  } else {
+    // ✅ otherwise return all requests (admin view)
     requestService.getAll()
-        .then(requests => res.json(requests))
-        .catch(next);
+      .then(requests => res.json(requests))
+      .catch(next);
+  }
 }
 
 function getActiveEmployeesRoute(req, res, next) {
