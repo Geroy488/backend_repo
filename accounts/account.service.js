@@ -55,15 +55,20 @@ async function authenticate({ email, password, ipAddress }) {
     // 🔹 Find employee linked to this account
     const employee = await db.Employee.findOne({
         where: { accountId: account.id },
-        attributes: ['employeeId']
-    });
+        attributes: ['id', 'employeeId'] // ✅ include both numeric id & code
+        });
 
-  return {
-    ...basicDetails(account),
-    employeeId: employee ? employee.employeeId : null, // ✅ add this line
-    jwtToken,
-    refreshToken: refreshToken.token
-    };
+        return {
+        ...basicDetails(account),
+        employee: employee
+            ? {
+                id: employee.id,             // numeric Employee.id (used for relations)
+                employeeId: employee.employeeId // code like EMP001
+            }
+            : null,
+        jwtToken,
+        refreshToken: refreshToken.token
+        };
 }
 
 async function refreshToken({ token, ipAddress }) {
