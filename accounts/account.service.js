@@ -26,7 +26,7 @@ module.exports = {
 // ------------------ AUTHENTICATION ------------------
 async function authenticate({ email, password, ipAddress }) {
     const account = await db.Account.scope('withHash').findOne({ where: { email } });
-
+     
     // 🔹 Check if account exists
     if (!account) throw 'Email or password is incorrect';
 
@@ -52,11 +52,17 @@ async function authenticate({ email, password, ipAddress }) {
     const jwtToken = generateJwtToken(account);
     const refreshToken = generateRefreshToken(account, ipAddress);
     await refreshToken.save();
+    // 🔹 Find employee linked to this account
+    const employee = await db.Employee.findOne({
+        where: { accountId: account.id },
+        attributes: ['employeeId']
+    });
 
-    return {
-        ...basicDetails(account),
-        jwtToken,
-        refreshToken: refreshToken.token
+  return {
+    ...basicDetails(account),
+    employeeId: employee ? employee.employeeId : null, // ✅ add this line
+    jwtToken,
+    refreshToken: refreshToken.token
     };
 }
 
