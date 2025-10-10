@@ -59,16 +59,12 @@ async function authenticate({ email, password, ipAddress }) {
         });
 
         return {
-        ...basicDetails(account),
-        employee: employee
-            ? {
-                id: employee.id,             // numeric Employee.id (used for relations)
-                employeeId: employee.employeeId // code like EMP001
-            }
-            : null,
-        jwtToken,
-        refreshToken: refreshToken.token
-        };
+  ...basicDetails(account),
+  employeeId: employee ? employee.id : null, // ✅ add numeric Employee.id
+  employeeCode: employee ? employee.employeeId : null, // optional if you use EMP001 codes
+  jwtToken,
+  refreshToken: refreshToken.token
+ };
 }
 
 async function refreshToken({ token, ipAddress }) {
@@ -334,8 +330,8 @@ function randomTokenString() {
 
 // Basic account details
 function basicDetails(account) {
-    const { id, title, firstName, lastName, email, role, created, updated, isVerified, status } = account;
-    return { id, title, firstName, lastName, email, role, created, updated, isVerified, status };
+  const { id, title, firstName, lastName, email, role, created, updated, isVerified, status, employeeId } = account;
+  return { id, title, firstName, lastName, email, role, created, updated, isVerified, status, employeeId };
 }
 
 // ------------------ EMPLOYEE HELPER ------------------
