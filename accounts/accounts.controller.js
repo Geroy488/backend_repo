@@ -255,12 +255,12 @@ function deactivate(req, res, next) { // Renamed from _delete
 // helper functions
 
 function setTokenCookie(res, token) {
-    // create cookie with refresh token that expires in 7 days
-    const cookieOptions = {
+  const isLocal = process.env.NODE_ENV !== 'production';
+  const cookieOptions = {
     httpOnly: true,
-    sameSite: 'none',
-    secure: true, // ✅ required for cross-site cookies
-    expires: new Date(Date.now() + 7*24*60*60*1000)
-};
-    res.cookie('refreshToken', token, cookieOptions);
+    sameSite: isLocal ? 'lax' : 'none', // lax for local, none for cross-site in production
+    secure: !isLocal, // only use secure cookies in production (HTTPS)
+    expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  };
+  res.cookie('refreshToken', token, cookieOptions);
 }

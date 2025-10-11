@@ -7,22 +7,14 @@ const cors = require('cors');
 const errorHandler = require('_middleware/error-handler');
 const employeesController = require('./employees/employees.controller');
 
-const allowedOrigins = [
-  'https://frontend-repo-inky.vercel.app',
-  'https://frontend-repo-g.vercel.app',
-  'http://localhost:4200' // for local development
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
-  },
+  origin: [
+    'http://localhost:4200',                    // ✅ for local Angular dev
+    'https://frontend-repo-inky.vercel.app',    // ✅ your deployed frontends
+    'https://frontend-repo-g.vercel.app'
+  ],
   credentials: true
 }));
-
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
