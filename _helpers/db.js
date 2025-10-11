@@ -1,6 +1,7 @@
-
-//for working postgres
-require('dotenv').config();
+// for working postgres
+const path = require('path');
+const envPath = process.env.NODE_ENV === 'development' ? '.env.local' : '.env';
+require('dotenv').config({ path: path.resolve(process.cwd(), envPath) });
 const { Sequelize, DataTypes } = require('sequelize');
 
 const db = {};
@@ -13,25 +14,26 @@ async function initialize() {
   const user = process.env.DB_USER || 'postgres';
   const password = process.env.DB_PASSWORD || 'postgres';
   const database = process.env.DB_NAME || 'group_project';
-  const isDev = process.env.NODE_ENV !== 'production';
+  const isDev = process.env.NODE_ENV === 'development';
 
   try {
-    console.log(`🔗 Connecting to PostgreSQL database "${database}" at ${host}:${port}...`);
+    console.log(`🔗 Connecting to PostgreSQL database "${database}" at ${host}:${port} (${isDev ? 'local' : 'production'})`);
 
     // ✅ Initialize Sequelize for PostgreSQL
     const sequelize = new Sequelize(database, user, password, {
-    host,
-    port,
-    dialect: 'postgres',
-    dialectOptions: {
-      ssl: {
-        require: true,
-        rejectUnauthorized: false, // needed for Render
-      },
-    },
-    logging: false,
-  });
-
+      host,
+      port,
+      dialect: 'postgres',
+      dialectOptions: isDev
+        ? {} // ⬅ no SSL locally
+        : {
+            ssl: {
+              require: true,
+              rejectUnauthorized: false, // needed for Render
+            },
+          },
+      logging: false,
+    });
 
     // ===============================
     // 🔹 Initialize Models
@@ -71,7 +73,7 @@ async function initialize() {
     // ===============================
     // 🔹 Sync Database (Safe for Production)
     // ===============================
-    await sequelize.sync({ alter: isDev }); // Only auto-alter tables in development
+    await sequelize.sync({ alter: isDev }); // Only auto-alter in development
     console.log(`✅ PostgreSQL connected & synced (alter=${isDev})`);
 
     // Attach Sequelize instance and models
@@ -84,6 +86,96 @@ async function initialize() {
 }
 
 module.exports = db;
+
+
+
+
+
+// //for working postgres
+// require('dotenv').config();
+// const { Sequelize, DataTypes } = require('sequelize');
+
+// const db = {};
+
+// initialize();
+
+// async function initialize() {
+//   const host = process.env.DB_HOST || 'localhost';
+//   const port = process.env.DB_PORT || 5432;
+//   const user = process.env.DB_USER || 'postgres';
+//   const password = process.env.DB_PASSWORD || 'postgres';
+//   const database = process.env.DB_NAME || 'group_project';
+//   const isDev = process.env.NODE_ENV !== 'production';
+
+//   try {
+//     console.log(`🔗 Connecting to PostgreSQL database "${database}" at ${host}:${port}...`);
+
+//     // ✅ Initialize Sequelize for PostgreSQL
+//     const sequelize = new Sequelize(database, user, password, {
+//     host,
+//     port,
+//     dialect: 'postgres',
+//     dialectOptions: {
+//       ssl: {
+//         require: true,
+//         rejectUnauthorized: false, // needed for Render
+//       },
+//     },
+//     logging: false,
+//   });
+
+
+//     // ===============================
+//     // 🔹 Initialize Models
+//     // ===============================
+//     db.Account = require('../accounts/account.model')(sequelize, DataTypes);
+//     db.RefreshToken = require('../accounts/refresh-token.model')(sequelize, DataTypes);
+//     db.Employee = require('../employees/employee.model')(sequelize, DataTypes);
+//     db.Request = require('../requests/request.model')(sequelize, DataTypes);
+//     db.Workflow = require('../workflows/workflow.model')(sequelize, DataTypes);
+//     db.Department = require('../departments/department.model')(sequelize, DataTypes);
+//     db.Position = require('../positions/position.model')(sequelize, DataTypes);
+
+//     // ===============================
+//     // 🔹 Define Relationships
+//     // ===============================
+//     db.Account.hasMany(db.RefreshToken, { onDelete: 'CASCADE' });
+//     db.RefreshToken.belongsTo(db.Account);
+
+//     db.Account.hasMany(db.Employee, { foreignKey: 'accountId', as: 'employees', onDelete: 'CASCADE' });
+//     db.Employee.belongsTo(db.Account, { foreignKey: 'accountId', as: 'account' });
+
+//     db.Employee.hasMany(db.Workflow, { foreignKey: 'employeeId', as: 'workflows', onDelete: 'CASCADE' });
+//     db.Workflow.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+//     db.Request.hasMany(db.Workflow, { foreignKey: 'requestId', as: 'workflows', onDelete: 'CASCADE' });
+//     db.Workflow.belongsTo(db.Request, { foreignKey: 'requestId', as: 'request' });
+
+//     db.Employee.hasMany(db.Request, { foreignKey: 'employeeId', as: 'requests', onDelete: 'CASCADE' });
+//     db.Request.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+
+//     db.Department.hasMany(db.Employee, { foreignKey: 'departmentId', as: 'employees', onDelete: 'SET NULL' });
+//     db.Employee.belongsTo(db.Department, { foreignKey: 'departmentId', as: 'department' });
+
+//     db.Position.hasMany(db.Employee, { foreignKey: 'positionId', as: 'employees', onDelete: 'SET NULL' });
+//     db.Employee.belongsTo(db.Position, { foreignKey: 'positionId', as: 'position' });
+
+//     // ===============================
+//     // 🔹 Sync Database (Safe for Production)
+//     // ===============================
+//     await sequelize.sync({ alter: isDev }); // Only auto-alter tables in development
+//     console.log(`✅ PostgreSQL connected & synced (alter=${isDev})`);
+
+//     // Attach Sequelize instance and models
+//     db.sequelize = sequelize;
+//     db.Sequelize = Sequelize;
+//   } catch (err) {
+//     console.error('❌ Database initialization failed:', err);
+//     process.exit(1);
+//   }
+// }
+
+// module.exports = db;
 
 
 
