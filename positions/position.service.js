@@ -3,37 +3,46 @@ const db = require('_helpers/db');
 
 module.exports = {
   getAll,
+  getEnabled,
   getById,
   create,
-  update,
-  delete: _delete
+  update
+  //toggleStatus
 };
 
 // ===== Service Methods =====
+
+// 📋 Get all positions, ordered by ID
 async function getAll() {
   const positions = await db.Position.findAll({
-    include: [{ model: db.Employee, as: 'employees', attributes: ['id'] }],
-    order: [['name', 'ASC']]
+    order: [['id', 'ASC']]
   });
 
   return positions.map(pos => ({
     id: pos.id,
     name: pos.name,
     description: pos.description,
-    employeeCount: pos.employees ? pos.employees.length : 0
+    status: pos.status
   }));
 }
 
-async function getById(id) {
-  const pos = await db.Position.findByPk(id, {
-    include: [
-      {
-        model: db.Employee,
-        as: 'employees',
-        attributes: ['id', 'employeeId', 'status']
-      }
-    ]
+async function getEnabled() {
+  const positions = await db.Position.findAll({
+    where: { status: 'ENABLE' },
+    order: [['id', 'ASC']]
   });
+
+  return positions.map(pos => ({
+    id: pos.id,
+    name: pos.name,
+    description: pos.description,
+    status: pos.status
+  }));
+}
+
+// 📋 Get a single position by ID
+async function getById(id) {
+  const pos = await db.Position.findByPk(id);
 
   if (!pos) throw 'Position not found';
 
@@ -41,30 +50,37 @@ async function getById(id) {
     id: pos.id,
     name: pos.name,
     description: pos.description,
-    employeeCount: pos.employees ? pos.employees.length : 0,
-    employees: pos.employees
+    status: pos.status
   };
 }
 
+// ➕ Create a new position
 async function create(params) {
   return await db.Position.create({
     name: params.name,
-    description: params.description
+    description: params.description,
+    status: params.status || 'ENABLE' // ✅ Uses selected status or defaults to ENABLE
   });
 }
 
+// ✏️ Update position details (including status)
 async function update(id, params) {
   const pos = await db.Position.findByPk(id);
   if (!pos) throw 'Position not found';
 
   Object.assign(pos, params);
   await pos.save();
+
   return pos;
 }
 
-async function _delete(id) {
-  const pos = await db.Position.findByPk(id);
-  if (!pos) throw 'Position not found';
+// // 🔄 Toggle position status (ENABLE/DISABLE)
+// async function toggleStatus(id) {
+//   const pos = await db.Position.findByPk(id);
+//   if (!pos) throw 'Position not found';
 
-  await pos.destroy();
-}
+//   pos.status = pos.status === 'ENABLE' ? 'DISABLE' : 'ENABLE';
+//   await pos.save();
+
+//   return pos;
+// }
