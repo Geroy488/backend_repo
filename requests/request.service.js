@@ -165,7 +165,7 @@ async function create(params) {
         items,
         status: status || 'Pending',
         employeeId: employee.id,
-        createdByRole: createdByRole || 'User' // 👈 defaults to User
+        createdByRole: createdByRole ||  (employee.account?.role || 'User') // ✅ auto assign based on who created
     });
 
     // 2️⃣ Automatically create a workflow for this request
