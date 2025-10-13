@@ -91,8 +91,6 @@ async function getById(id) {
 //     return await getById(request.id);
 // }
 
-// ✅ Update request
-// ✅ Update request and create workflow log with role tracking
 // ✅ Update request and create detailed workflow log
 async function update(id, params) {
     const request = await getById(id);
@@ -165,43 +163,43 @@ async function update(id, params) {
 }
 
 
-async function create(params) {
-    const { type, items, status, employeeId } = params;
+async function create(params, user) {
+  const { type, items, status, employeeId } = params;
 
-    if (!employeeId) throw new Error('Employee is required');
+  if (!employeeId) throw new Error('Employee is required');
 
-    const employee = await db.Employee.findByPk(employeeId, {
-        include: [{ model: db.Account, as: 'account' }]
-    });
-    if (!employee) throw new Error('Employee not found');
+  const employee = await db.Employee.findByPk(employeeId, {
+    include: [{ model: db.Account, as: 'account' }]
+  });
+  if (!employee) throw new Error('Employee not found');
 
-    // Log if employee account is inactive
-    if (employee.account?.status !== 'Active') {
-        console.warn(`Creating request for inactive employee: ${employee.employeeId}`);
-    }
+  // Log if employee account is inactive
+  if (employee.account?.status !== 'Active') {
+    console.warn(`Creating request for inactive employee: ${employee.employeeId}`);
+  }
 
-    // 1️⃣ Create the request
-    const request = await db.Request.create({
-        type,
-        items,
-        status: status || 'Pending',
-        employeeId: employee.id,
-        createdByRole: createdByRole ||  (employee.account?.role || 'User') // ✅ auto assign based on who created
-    });
+  // 1️⃣ Create the request
+  const request = await db.Request.create({
+    type,
+    items,
+    status: status || 'Pending',
+    employeeId: employee.id,
+    createdByRole: user?.role || 'User' // ✅ tag based on who is logged in
+  });
 
-    // 2️⃣ Automatically create a workflow for this request
-    const workflow = await db.Workflow.create({
-        type: request.type,  // matches frontend workflow type
-        details: `Review ${request.type} request #${request.id} from Employee ${employee.employeeId}`,
-        employeeId: employee.id,   // assign to the employee who created request
-        requestId: request.id,     // link workflow to request
-        status: 'Pending'
-    });
+  // 2️⃣ Automatically create a workflow for this request
+  await db.Workflow.create({
+    type: request.type,
+    details: `Review ${request.type} request #${request.id} from Employee ${employee.employeeId}`,
+    employeeId: employee.id,
+    requestId: request.id,
+    status: 'Pending'
+  });
 
-    console.log('Workflow created:', workflow.toJSON()); // ✅ now it logs properly
+  console.log(`✅ Request #${request.id} created by ${user?.role || 'User'}`);
 
-    // 3️⃣ Return full request with relations
-    return await getById(request.id);
+  // 3️⃣ Return full request with relations
+  return await getById(request.id);
 }
 
 

@@ -52,10 +52,11 @@ function getById(req, res, next) {
 }
 
 function create(req, res, next) {
-    requestService.create(req.body)
-        .then(request => res.json(request))
-        .catch(next);
+  requestService.create(req.body, req.user) // ✅ pass logged-in user
+    .then(request => res.json(request))
+    .catch(next);
 }
+
 
 function update(req, res, next) {
     requestService.update(req.params.id, req.body)
