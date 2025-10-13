@@ -92,14 +92,56 @@ async function getById(id) {
 // }
 
 // ✅ Update request
+// ✅ Update request and create workflow log with role tracking
 async function update(id, params) {
     const request = await getById(id);
     if (!request) throw new Error('Request not found');
 
+    // 🟡 Store old values before updating
+    const oldType = request.type;
+    const oldItems = request.items;
+    const oldStatus = request.status;
+
+    // 🧩 Determine who made the change
+    const editedByRole = params.createdByRole || 'User';
+
+    // 🟢 Apply updates
     Object.assign(request, params);
     await request.save();
 
-    return await getById(request.id);
+    // 🔄 Reload full updated data
+    const updatedRequest = await getById(request.id);
+
+    // 🧠 Detect what changed
+    const changes = [];
+    if (params.type && params.type !== oldType)
+        changes.push(`Type changed from "${oldType}" to "${params.type}"`);
+    if (params.items && params.items !== oldItems)
+        changes.push(`Items updated`);
+    if (params.status && params.status !== oldStatus)
+        changes.push(`Status changed from "${oldStatus}" to "${params.status}"`);
+
+    // 🧾 Build a clear workflow message
+    const actor = editedByRole === 'Admin' 
+        ? 'Admin' 
+        : `Employee ${updatedRequest.employee.employeeId}`;
+
+    const details = changes.length > 0
+        ? `${actor} updated request #${updatedRequest.id}: ${changes.join(', ')}.`
+        : `${actor} updated request #${updatedRequest.id}.`;
+
+    // 🪄 Automatically create workflow record
+    await db.Workflow.create({
+        type: updatedRequest.type,
+        details,
+        employeeId: updatedRequest.employeeId,
+        requestId: updatedRequest.id,
+        status: updatedRequest.status || 'Pending'
+    });
+
+    console.log('✅ Workflow created for request update:', details);
+
+    return updatedRequest;
 }
 
 async function create(params) {
@@ -122,7 +164,8 @@ async function create(params) {
         type,
         items,
         status: status || 'Pending',
-        employeeId: employee.id
+        employeeId: employee.id,
+        createdByRole: createdByRole || 'User' // 👈 defaults to User
     });
 
     // 2️⃣ Automatically create a workflow for this request

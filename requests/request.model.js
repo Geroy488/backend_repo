@@ -3,7 +3,8 @@ module.exports = (sequelize, DataTypes) => {
     type: { type: DataTypes.STRING, allowNull: false },
     items: { type: DataTypes.STRING, allowNull: false },
     status: { type: DataTypes.STRING, defaultValue: 'Pending' },
-    employeeId: { type: DataTypes.INTEGER, allowNull: false }
+    employeeId: { type: DataTypes.INTEGER, allowNull: false },
+    createdByRole: { type: DataTypes.STRING, allowNull: false, defaultValue: 'User' } // 👈 new
   });
 
   Request.associate = (models) => {
