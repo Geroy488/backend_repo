@@ -93,44 +93,64 @@ async function getById(id) {
 
 // ✅ Update request
 // ✅ Update request and create workflow log with role tracking
+// ✅ Update request and create detailed workflow log
 async function update(id, params) {
     const request = await getById(id);
     if (!request) throw new Error('Request not found');
 
-    // 🟡 Store old values before updating
+    // 🟡 Keep old values for comparison
     const oldType = request.type;
     const oldItems = request.items;
     const oldStatus = request.status;
-
-    // 🧩 Determine who made the change
     const editedByRole = params.createdByRole || 'User';
 
     // 🟢 Apply updates
     Object.assign(request, params);
     await request.save();
 
-    // 🔄 Reload full updated data
     const updatedRequest = await getById(request.id);
-
-    // 🧠 Detect what changed
     const changes = [];
+
+    // 🧩 Compare type
     if (params.type && params.type !== oldType)
-        changes.push(`Type changed from "${oldType}" to "${params.type}"`);
-    if (params.items && params.items !== oldItems)
-        changes.push(`Items updated`);
+        changes.push(`Type changed from "${oldType}" → "${params.type}"`);
+
+    // 🧩 Compare status
     if (params.status && params.status !== oldStatus)
-        changes.push(`Status changed from "${oldStatus}" to "${params.status}"`);
+        changes.push(`Status changed from "${oldStatus}" → "${params.status}"`);
 
-    // 🧾 Build a clear workflow message
-    const actor = editedByRole === 'Admin' 
-        ? 'Admin' 
-        : `Employee ${updatedRequest.employee.employeeId}`;
+    // 🧩 Compare items in detail
+    if (params.items && params.items !== oldItems) {
+        const oldList = oldItems.split(',').map(s => s.trim());
+        const newList = params.items.split(',').map(s => s.trim());
 
-    const details = changes.length > 0
-        ? `${actor} updated request #${updatedRequest.id}: ${changes.join(', ')}.`
-        : `${actor} updated request #${updatedRequest.id}.`;
+        // Loop through both old & new to detect detailed changes
+        for (let i = 0; i < Math.max(oldList.length, newList.length); i++) {
+            const oldItem = oldList[i];
+            const newItem = newList[i];
 
-    // 🪄 Automatically create workflow record
+            if (!oldItem && newItem) {
+                changes.push(`Added new item "${newItem}"`);
+            } else if (oldItem && !newItem) {
+                changes.push(`Removed item "${oldItem}"`);
+            } else if (oldItem && newItem && oldItem !== newItem) {
+                changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
+            }
+        }
+    }
+
+    // 🧾 Build readable log text
+    const actor =
+        editedByRole === 'Admin'
+            ? 'Admin'
+            : `Employee ${updatedRequest.employee.employeeId}`;
+
+    const details =
+        changes.length > 0
+            ? `${actor} edited request #${updatedRequest.id}: ${changes.join(', ')}.`
+            : `${actor} edited request #${updatedRequest.id}.`;
+
+    // 🪄 Log workflow entry
     await db.Workflow.create({
         type: updatedRequest.type,
         details,
@@ -143,6 +163,7 @@ async function update(id, params) {
 
     return updatedRequest;
 }
+
 
 async function create(params) {
     const { type, items, status, employeeId } = params;
