@@ -372,20 +372,35 @@ async function getNextEmployeeId() {
 
 //new for gmail verification
 async function sendVerificationEmail(account, origin) {
- const verifyUrl = `${process.env.FRONTEND_URL}/account/verify-email?token=${account.verificationToken}`;
+  const frontendUrl = origin || process.env.FRONTEND_URL || 'http://localhost:4200';
+  const verifyUrl = `${frontendUrl}/account/verify-email?token=${account.verificationToken}`;
 
+  console.log(`📧 Sending verification email to: ${account.email}`);
+  console.log(`🔗 Verification URL: ${verifyUrl}`);
+
+  // Send verification email to the user
   await sendEmail({
-    to: 'mayecha302@gmail.com', // 👈 the email YOU want to receive verification requests
-    //to: account.email, //user to get their own verification email instead
-    subject: 'New User Verification Request',
+    to: account.email,
+    subject: 'Verify Your Email Address',
     html: `
-      <h4>New User Registration</h4>
-      <p><strong>${account.firstName} ${account.lastName}</strong> (${account.email}) has registered.</p>
-      <p>Click below to verify their account:</p>
-      <p><a href="${verifyUrl}">${verifyUrl}</a></p>
+      <h4>Welcome, ${account.firstName}!</h4>
+      <p>Thank you for registering. Please verify your email address to activate your account.</p>
+      <p><a href="${verifyUrl}" style="color:#0d6efd;">Click here to verify your email</a></p>
+      <p>If the link doesn’t work, copy and paste this URL:</p>
+      <p>${verifyUrl}</p>
     `,
   });
-}   
+
+  // Notify admin (optional)
+  await sendEmail({
+  to: process.env.ADMIN_EMAIL,
+  subject: 'New User Registration Alert',
+  html: `
+    <h4>New Registration Alert</h4>
+    <p>${account.firstName} ${account.lastName} just registered with email ${account.email}</p>
+  `,
+});
+}
 
 async function sendAlreadyRegisteredEmail(email, origin) {
     let message;

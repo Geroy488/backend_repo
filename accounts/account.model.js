@@ -21,7 +21,11 @@ function model(sequelize) {
         updated: { type: DataTypes.DATE },
 
         // 👇 ADD THIS HERE
-        status: { type: DataTypes.ENUM("Active", "Inactive"), defaultValue: 'Active' },
+        status: {
+            type: DataTypes.ENUM("Active", "Inactive", "Pending"),
+            allowNull: false,
+            defaultValue: "Pending"
+        },
 
         isVerified: {
             type: DataTypes.VIRTUAL,
