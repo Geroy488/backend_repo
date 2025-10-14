@@ -1,13 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const requestService = require('./request.service');
+const authorize = require('_middleware/authorize');
 
 // Routes
 router.get('/', getAll);
 router.get('/active-employees', getActiveEmployeesRoute);
 router.get('/all-employees', getAllEmployeesRoute); // ✅ new route
 router.get('/:id', getById);
-router.post('/', create);
+router.post('/', authorize(), create);
 router.put('/:id', update);
 
 console.log("✅ Requests controller loaded");

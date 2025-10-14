@@ -24,7 +24,7 @@ async function getAll() {
                     {
                         model: db.Account,
                         as: 'account',
-                        attributes: ['id', 'email', 'status']
+                        attributes: ['id', 'email', 'status', 'role']
                     },
                     { 
                         model: db.Department, 
@@ -162,8 +162,8 @@ async function update(id, params) {
     return updatedRequest;
 }
 
-
 async function create(params, user) {
+  console.log("🧾 Creating request by:", user);
   const { type, items, status, employeeId } = params;
 
   if (!employeeId) throw new Error('Employee is required');
