@@ -95,30 +95,33 @@ async function revokeToken({ token, ipAddress }) {
 
 // ------------------ ACCOUNT MANAGEMENT ------------------
 
-// REGISTER (user self-register)
+// REGISTER (user self-register) — Auto-verify & skip email
 async function register(params, origin) {
-    if (await db.Account.findOne({ where: { email: params.email } })) {
-        sendAlreadyRegisteredEmail(params.email, origin).catch(err => console.error(err));
-        return;
-    }
+  // prevent user from setting role or status
+  if (params.status) delete params.status;
+  if (params.role) delete params.role;
 
-    const account = new db.Account({
+  // check if email already registered
+  if (await db.Account.findOne({ where: { email: params.email } })) {
+    throw 'Email "' + params.email + '" is already registered';
+  }
+
+  // create account (auto verified and active)
+  const account = new db.Account({
     ...params,
     role: (await db.Account.count()) === 0 ? Role.Admin : Role.User,
-    status: 'Pending',
-    verificationToken: randomTokenString(),
+    status: 'Active',            // 👈 active right away
+    verified: Date.now(),        // 👈 mark verified instantly
+    verificationToken: null,
     passwordHash: await hash(params.password)
-    // verified: Date.now(), // ✅ auto-verify new accounts
-    // passwordHash: await hash(params.password)
-    });
+  });
 
+  await account.save();
 
-    await account.save();
-    
-    // Send verification email to your Gmailc
-    await sendVerificationEmail(account, origin).catch(err => console.error('Email error:', err));
+  // ✅ optionally create employee record automatically
+  // await ensureEmployeeExists(account);
 
-    return basicDetails(account);
+  return basicDetails(account);
 }
 
 async function verifyEmail({ token }) {
@@ -370,52 +373,52 @@ async function getNextEmployeeId() {
 //     });
 // }
 
-//new for gmail verification
-async function sendVerificationEmail(account, origin) {
-  const frontendUrl = origin || process.env.FRONTEND_URL || 'http://localhost:4200';
-  const verifyUrl = `${frontendUrl}/account/verify-email?token=${account.verificationToken}`;
+// //new for gmail verification
+// async function sendVerificationEmail(account, origin) {
+//   const frontendUrl = origin || process.env.FRONTEND_URL || 'http://localhost:4200';
+//   const verifyUrl = `${frontendUrl}/account/verify-email?token=${account.verificationToken}`;
 
-  console.log(`📧 Sending verification email to: ${account.email}`);
-  console.log(`🔗 Verification URL: ${verifyUrl}`);
+//   console.log(`📧 Sending verification email to: ${account.email}`);
+//   console.log(`🔗 Verification URL: ${verifyUrl}`);
 
-  // Send verification email to the user
-  await sendEmail({
-    to: account.email,
-    subject: 'Verify Your Email Address',
-    html: `
-      <h4>Welcome, ${account.firstName}!</h4>
-      <p>Thank you for registering. Please verify your email address to activate your account.</p>
-      <p><a href="${verifyUrl}" style="color:#0d6efd;">Click here to verify your email</a></p>
-      <p>If the link doesn’t work, copy and paste this URL:</p>
-      <p>${verifyUrl}</p>
-    `,
-  });
+//   // Send verification email to the user
+//   await sendEmail({
+//     to: account.email,
+//     subject: 'Verify Your Email Address',
+//     html: `
+//       <h4>Welcome, ${account.firstName}!</h4>
+//       <p>Thank you for registering. Please verify your email address to activate your account.</p>
+//       <p><a href="${verifyUrl}" style="color:#0d6efd;">Click here to verify your email</a></p>
+//       <p>If the link doesn’t work, copy and paste this URL:</p>
+//       <p>${verifyUrl}</p>
+//     `,
+//   });
 
-  // Notify admin (optional)
-  await sendEmail({
-  to: process.env.ADMIN_EMAIL,
-  subject: 'New User Registration Alert',
-  html: `
-    <h4>New Registration Alert</h4>
-    <p>${account.firstName} ${account.lastName} just registered with email ${account.email}</p>
-  `,
-});
-}
+//   // Notify admin (optional)
+//   await sendEmail({
+//   to: process.env.ADMIN_EMAIL,
+//   subject: 'New User Registration Alert',
+//   html: `
+//     <h4>New Registration Alert</h4>
+//     <p>${account.firstName} ${account.lastName} just registered with email ${account.email}</p>
+//   `,
+// });
+// }
 
-async function sendAlreadyRegisteredEmail(email, origin) {
-    let message;
-    if (origin) {
-        message = `<p>If you forgot your password visit <a href="${origin}/account/forgot-password">forgot password</a>.</p>`;
-    } else {
-        message = `<p>You can reset your password via the <code>/account/forgot-password</code> API.</p>`;
-    }
+// async function sendAlreadyRegisteredEmail(email, origin) {
+//     let message;
+//     if (origin) {
+//         message = `<p>If you forgot your password visit <a href="${origin}/account/forgot-password">forgot password</a>.</p>`;
+//     } else {
+//         message = `<p>You can reset your password via the <code>/account/forgot-password</code> API.</p>`;
+//     }
 
-    await sendEmail({
-        to: email,
-        subject: 'Email Already Registered',
-        html: `<h4>Email Already Registered</h4><p>Your email <strong>${email}</strong> is already registered.</p>${message}`
-    });
-}
+//     await sendEmail({
+//         to: email,
+//         subject: 'Email Already Registered',
+//         html: `<h4>Email Already Registered</h4><p>Your email <strong>${email}</strong> is already registered.</p>${message}`
+//     });
+// }
 
 async function sendPasswordResetEmail(account, origin) {
     let message;
