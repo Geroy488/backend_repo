@@ -94,80 +94,97 @@ module.exports = {
 //     return await getById(request.id);
 // }
 
-    // ✅ Update request and create detailed workflow log
-    async function update(id, params) {
-        const request = await getById(id);
-        if (!request) throw new Error('Request not found');
+    // ✅ Update request with full debug logging
+async function update(id, params) {
+    console.log('🟡 Incoming update request:', { id, params });
 
-        // 🟡 Keep old values for comparison
-        const oldType = request.type;
-        const oldItems = request.items;
-        const oldStatus = request.status;
-        const editedByRole = params.createdByRole || 'User';
+    const request = await getById(id);
+    if (!request) throw new Error('Request not found');
 
-        // 🟢 Apply updates
-        Object.assign(request, params);
+    const oldType = request.type;
+    const oldItems = request.items;
+    const oldStatus = request.status;
+    const editedByRole = params.createdByRole || 'User';
+
+    // Apply updates
+    Object.assign(request, params);
+
+    try {
         await request.save();
+        console.log(`✅ Request #${id} saved successfully`);
+    } catch (err) {
+        console.error('❌ Error saving request:', err.message);
+        throw err;
+    }
 
-        const updatedRequest = await getById(request.id);
-        const changes = [];
+    let updatedRequest;
+    try {
+        updatedRequest = await getById(request.id);
+        console.log('🔁 Reloaded updated request successfully');
+    } catch (err) {
+        console.error('❌ Failed to reload updated request:', err.message);
+        updatedRequest = request;
+    }
 
-        // 🧩 Compare type
-        if (params.type && params.type !== oldType)
-            changes.push(`Type changed from "${oldType}" → "${params.type}"`);
+    const changes = [];
 
-        // 🧩 Compare status
-        if (params.status && params.status !== oldStatus)
-            changes.push(`Status changed from "${oldStatus}" → "${params.status}"`);
+    if (params.type && params.type !== oldType)
+        changes.push(`Type changed from "${oldType}" → "${params.type}"`);
 
-        // 🧩 Compare items in detail
-        if (params.items && params.items !== oldItems) {
-            const oldList = oldItems.split(',').map(s => s.trim());
-            const newList = params.items.split(',').map(s => s.trim());
+    if (params.status && params.status !== oldStatus)
+        changes.push(`Status changed from "${oldStatus}" → "${params.status}"`);
 
-            // Loop through both old & new to detect detailed changes
-            for (let i = 0; i < Math.max(oldList.length, newList.length); i++) {
-                const oldItem = oldList[i];
-                const newItem = newList[i];
+    if (params.items && params.items !== oldItems) {
+        const oldList = Array.isArray(oldItems)
+            ? oldItems
+            : (typeof oldItems === 'string' ? oldItems.split(',').map(s => s.trim()) : []);
+        const newList = Array.isArray(params.items)
+            ? params.items
+            : (typeof params.items === 'string' ? params.items.split(',').map(s => s.trim()) : []);
 
-                if (!oldItem && newItem) {
-                    changes.push(`Added new item "${newItem}"`);
-                } else if (oldItem && !newItem) {
-                    changes.push(`Removed item "${oldItem}"`);
-                } else if (oldItem && newItem && oldItem !== newItem) {
-                    changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
-                }
-            }
+        for (let i = 0; i < Math.max(oldList.length, newList.length); i++) {
+            const oldItem = oldList[i];
+            const newItem = newList[i];
+            if (!oldItem && newItem) changes.push(`Added new item "${newItem}"`);
+            else if (oldItem && !newItem) changes.push(`Removed item "${oldItem}"`);
+            else if (oldItem && newItem && oldItem !== newItem)
+                changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
         }
+    }
 
-        // 🧾 Build readable log text
-        const actor =
-            editedByRole === 'Admin'
-                ? 'Admin'
-                : `Employee ${updatedRequest.employee.employeeId}`;
+    const actor =
+        editedByRole === 'Admin'
+            ? 'Admin'
+            : updatedRequest?.employee
+                ? `Employee ${updatedRequest.employee.employeeId}`
+                : 'Unknown Employee';
 
-        const details =
-            changes.length > 0
-                ? `${actor} edited request #${updatedRequest.id}: ${changes.join(', ')}.`
-                : `${actor} edited request #${updatedRequest.id}.`;
+    const details =
+        changes.length > 0
+            ? `${actor} edited request #${updatedRequest.id}: ${changes.join(', ')}.`
+            : `${actor} edited request #${updatedRequest.id}.`;
 
-        // 🪄 Log workflow entry
+    try {
         await db.Workflow.create({
             type: updatedRequest.type,
             details,
-            employeeId: updatedRequest.employeeId,
+            employeeId: updatedRequest.employeeId || request.employeeId || null,
             requestId: updatedRequest.id,
-            status: updatedRequest.status || 'Pending'
+            status: updatedRequest.status === 'Draft' ? 'Pending' : (updatedRequest.status || 'Pending')
         });
-
-        console.log('✅ Workflow created for request update:', details);
-
-        return updatedRequest;
+        console.log('✅ Workflow log created:', details);
+    } catch (err) {
+        console.error('❌ Error creating workflow entry:', err.message);
+        throw err;
     }
+
+    console.log('✅ Update complete for request:', updatedRequest.id);
+    return updatedRequest;
+}
 
     async function create(params, user) {
         console.log("🧾 Creating request by:", user);
-        let { type, items, status, employeeId } = params;
+        let { type, items, status, employeeId, approverId } = params;
 
         // ✅ Automatically use logged-in user's employeeId if role = User
         if (user?.role === 'User') {
@@ -198,6 +215,7 @@ module.exports = {
             items,
             status: finalStatus,
             employeeId: employee.id,
+            approverId: approverId || null,
             createdByRole: user?.role || 'User'
         });
 
