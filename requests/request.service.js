@@ -200,7 +200,7 @@ module.exports = {
             status: finalStatus,
             employeeId: employee.id,
             createdByRole: user?.role || 'User',
-            status: 'Draft' // ✅ Default when created
+            status: finalStatus // Use the status coming from frontend (Saved or Pending)
         });
 
         // ✅ Only create workflow if submitted (status = Pending)
