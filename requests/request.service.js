@@ -16,8 +16,7 @@ module.exports = {
     async function getAll() {
         const requests = await db.Request.findAll({
         where: {
-        // Only show non-draft requests in the admin table
-        status: { [db.Sequelize.Op.ne]: 'Draft' }
+            status: { [db.Sequelize.Op.in]: ['Pending', 'Approved', 'Rejected'] } // only visible statuses
         },
             include: [
                 {
@@ -199,8 +198,7 @@ module.exports = {
             items,
             status: finalStatus,
             employeeId: employee.id,
-            createdByRole: user?.role || 'User',
-            status: finalStatus // Use the status coming from frontend (Saved or Pending)
+            createdByRole: user?.role || 'User'
         });
 
         // ✅ Only create workflow if submitted (status = Pending)
