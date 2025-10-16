@@ -12,56 +12,60 @@ module.exports = {
 
 // ------------------ FUNCTIONS ------------------
 
-// ✅ Fetch all requests with their employees + account info
-async function getAll() {
-    const requests = await db.Request.findAll({
-        include: [
-            {
-                model: db.Employee,
-                as: 'employee',
-                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
-                include: [
-                    {
-                        model: db.Account,
-                        as: 'account',
-                        attributes: ['id', 'email', 'status', 'role']
-                    },
-                    { 
-                        model: db.Department, 
-                        as: 'department', 
-                        attributes: ['name'] // get department name
-                    },
-                    {
-                        model: db.Position,
-                        as: 'position',
-                        attributes: ['name'] 
-                    }
-                ]
-            }
-        ],
-        order: [['id', 'ASC']]
-    });
+    // ✅ Fetch all requests with their employees + account info
+    async function getAll() {
+        const requests = await db.Request.findAll({
+        where: {
+        // Only show non-draft requests in the admin table
+        status: { [db.Sequelize.Op.ne]: 'Draft' }
+        },
+            include: [
+                {
+                    model: db.Employee,
+                    as: 'employee',
+                    attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                    include: [
+                        {
+                            model: db.Account,
+                            as: 'account',
+                            attributes: ['id', 'email', 'status', 'role']
+                        },
+                        { 
+                            model: db.Department, 
+                            as: 'department', 
+                            attributes: ['name'] // get department name
+                        },
+                        {
+                            model: db.Position,
+                            as: 'position',
+                            attributes: ['name'] 
+                        }
+                    ]
+                }
+            ],
+            order: [['id', 'ASC']]
+        });
 
-    return requests;
-}
+        return requests;
+    }
 
-// ✅ Fetch a single request by ID
-async function getById(id) {
-    return await db.Request.findByPk(id, {
-        include: [
-            {
-                model: db.Employee,
-                as: 'employee',
-                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
-                include: [
-                    { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
-                    { model: db.Department, as: 'department', attributes: ['name'] },
-                    { model: db.Position, as: 'position', attributes: ['name'] }
-                ]
-            }
-        ]
-    });
-}
+    // ✅ Fetch a single request by ID
+    async function getById(id) {
+        return await db.Request.findByPk(id, {
+            include: [
+                {
+                    model: db.Employee,
+                    as: 'employee',
+                    attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                    include: [
+                        { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+                        { model: db.Department, as: 'department', attributes: ['name'] },
+                        { model: db.Position, as: 'position', attributes: ['name'] }
+                    ]
+                }
+            ]
+        });
+    }
 
 // // ✅ Create a new request (allows inactive employees)
 // async function create(params) {
@@ -91,179 +95,193 @@ async function getById(id) {
 //     return await getById(request.id);
 // }
 
-// ✅ Update request and create detailed workflow log
-async function update(id, params) {
-    const request = await getById(id);
-    if (!request) throw new Error('Request not found');
+    // ✅ Update request and create detailed workflow log
+    async function update(id, params) {
+        const request = await getById(id);
+        if (!request) throw new Error('Request not found');
 
-    // 🟡 Keep old values for comparison
-    const oldType = request.type;
-    const oldItems = request.items;
-    const oldStatus = request.status;
-    const editedByRole = params.createdByRole || 'User';
+        // 🟡 Keep old values for comparison
+        const oldType = request.type;
+        const oldItems = request.items;
+        const oldStatus = request.status;
+        const editedByRole = params.createdByRole || 'User';
 
-    // 🟢 Apply updates
-    Object.assign(request, params);
-    await request.save();
+        // 🟢 Apply updates
+        Object.assign(request, params);
+        await request.save();
 
-    const updatedRequest = await getById(request.id);
-    const changes = [];
+        const updatedRequest = await getById(request.id);
+        const changes = [];
 
-    // 🧩 Compare type
-    if (params.type && params.type !== oldType)
-        changes.push(`Type changed from "${oldType}" → "${params.type}"`);
+        // 🧩 Compare type
+        if (params.type && params.type !== oldType)
+            changes.push(`Type changed from "${oldType}" → "${params.type}"`);
 
-    // 🧩 Compare status
-    if (params.status && params.status !== oldStatus)
-        changes.push(`Status changed from "${oldStatus}" → "${params.status}"`);
+        // 🧩 Compare status
+        if (params.status && params.status !== oldStatus)
+            changes.push(`Status changed from "${oldStatus}" → "${params.status}"`);
 
-    // 🧩 Compare items in detail
-    if (params.items && params.items !== oldItems) {
-        const oldList = oldItems.split(',').map(s => s.trim());
-        const newList = params.items.split(',').map(s => s.trim());
+        // 🧩 Compare items in detail
+        if (params.items && params.items !== oldItems) {
+            const oldList = oldItems.split(',').map(s => s.trim());
+            const newList = params.items.split(',').map(s => s.trim());
 
-        // Loop through both old & new to detect detailed changes
-        for (let i = 0; i < Math.max(oldList.length, newList.length); i++) {
-            const oldItem = oldList[i];
-            const newItem = newList[i];
+            // Loop through both old & new to detect detailed changes
+            for (let i = 0; i < Math.max(oldList.length, newList.length); i++) {
+                const oldItem = oldList[i];
+                const newItem = newList[i];
 
-            if (!oldItem && newItem) {
-                changes.push(`Added new item "${newItem}"`);
-            } else if (oldItem && !newItem) {
-                changes.push(`Removed item "${oldItem}"`);
-            } else if (oldItem && newItem && oldItem !== newItem) {
-                changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
+                if (!oldItem && newItem) {
+                    changes.push(`Added new item "${newItem}"`);
+                } else if (oldItem && !newItem) {
+                    changes.push(`Removed item "${oldItem}"`);
+                } else if (oldItem && newItem && oldItem !== newItem) {
+                    changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
+                }
             }
         }
+
+        // 🧾 Build readable log text
+        const actor =
+            editedByRole === 'Admin'
+                ? 'Admin'
+                : `Employee ${updatedRequest.employee.employeeId}`;
+
+        const details =
+            changes.length > 0
+                ? `${actor} edited request #${updatedRequest.id}: ${changes.join(', ')}.`
+                : `${actor} edited request #${updatedRequest.id}.`;
+
+        // 🪄 Log workflow entry
+        await db.Workflow.create({
+            type: updatedRequest.type,
+            details,
+            employeeId: updatedRequest.employeeId,
+            requestId: updatedRequest.id,
+            status: updatedRequest.status || 'Pending'
+        });
+
+        console.log('✅ Workflow created for request update:', details);
+
+        return updatedRequest;
     }
 
-    // 🧾 Build readable log text
-    const actor =
-        editedByRole === 'Admin'
-            ? 'Admin'
-            : `Employee ${updatedRequest.employee.employeeId}`;
+    async function create(params, user) {
+        console.log("🧾 Creating request by:", user);
+        let { type, items, status, employeeId } = params;
 
-    const details =
-        changes.length > 0
-            ? `${actor} edited request #${updatedRequest.id}: ${changes.join(', ')}.`
-            : `${actor} edited request #${updatedRequest.id}.`;
+        // ✅ Automatically use logged-in user's employeeId if role = User
+        if (user?.role === 'User') {
+            const employee = await db.Employee.findOne({
+            where: { accountId: user.id }
+            });
+            if (!employee) throw new Error('Employee record not found for this user');
+            employeeId = employee.id; // override
+        }
 
-    // 🪄 Log workflow entry
-    await db.Workflow.create({
-        type: updatedRequest.type,
-        details,
-        employeeId: updatedRequest.employeeId,
-        requestId: updatedRequest.id,
-        status: updatedRequest.status || 'Pending'
-    });
+        if (!employeeId) throw new Error('Employee is required');
 
-    console.log('✅ Workflow created for request update:', details);
+        const employee = await db.Employee.findByPk(employeeId, {
+            include: [{ model: db.Account, as: 'account' }]
+        });
+        if (!employee) throw new Error('Employee not found');
 
-    return updatedRequest;
-}
+        if (employee.account?.status !== 'Active') {
+            console.warn(`Creating request for inactive employee: ${employee.employeeId}`);
+        }
 
-async function create(params, user) {
-  console.log("🧾 Creating request by:", user);
-  const { type, items, status, employeeId } = params;
+        // ✅ Use passed status or default to 'Draft'
+        const finalStatus = status || 'Draft';
 
-  if (!employeeId) throw new Error('Employee is required');
+        // 🟢 Create request
+        const newRequest = await db.Request.create({
+            type,
+            items,
+            status: finalStatus,
+            employeeId: employee.id,
+            createdByRole: user?.role || 'User',
+            status: 'Draft' // ✅ Default when created
+        });
 
-  const employee = await db.Employee.findByPk(employeeId, {
-    include: [{ model: db.Account, as: 'account' }]
-  });
-  if (!employee) throw new Error('Employee not found');
+        // ✅ Only create workflow if submitted (status = Pending)
+        if (finalStatus === 'Pending') {
+            await db.Workflow.create({
+            type: newRequest.type,
+            details: `Review ${newRequest.type} request #${newRequest.id} from Employee ${employee.employeeId}`,
+            employeeId: employee.id,
+            requestId: newRequest.id,
+            status: 'Pending'
+            });
 
-  // Log if employee account is inactive
-  if (employee.account?.status !== 'Active') {
-    console.warn(`Creating request for inactive employee: ${employee.employeeId}`);
-  }
+            console.log(`✅ Workflow created for submitted request #${newRequest.id}`);
+        } else {
+            console.log(`📝 Draft saved for Employee ${employee.employeeId}, not yet submitted.`);
+        }
 
-  // 1️⃣ Create the request
-  const request = await db.Request.create({
-    type,
-    items,
-    status: status || 'Pending',
-    employeeId: employee.id,
-    createdByRole: user?.role || 'User' // ✅ tag based on who is logged in
-  });
+        console.log(`✅ Request #${newRequest.id} created by ${user?.role || 'User'}`);
+        return await getById(newRequest.id);
+    }
 
-  // 2️⃣ Automatically create a workflow for this request
-  await db.Workflow.create({
-    type: request.type,
-    details: `Review ${request.type} request #${request.id} from Employee ${employee.employeeId}`,
-    employeeId: employee.id,
-    requestId: request.id,
-    status: 'Pending'
-  });
+    // ✅ Fetch employees with active accounts (for dropdown)
+    async function getActiveEmployees() {
+        const employees = await db.Employee.findAll({
+            include: [
+                {
+                    model: db.Account,
+                    as: 'account',
+                    attributes: ['id', 'email', 'status'],
+                    where: { status: 'Active' }
+                }
+            ],
+            order: [['employeeId', 'ASC']]
+        });
 
-  console.log(`✅ Request #${request.id} created by ${user?.role || 'User'}`);
+        return employees.map(e => ({
+            id: e.id,
+            employeeId: e.employeeId,
+            account: e.account ? { id: e.account.id, email: e.account.email } : null
+        }));
+    }
 
-  // 3️⃣ Return full request with relations
-  return await getById(request.id);
-}
-
-
-// ✅ Fetch employees with active accounts (for dropdown)
-async function getActiveEmployees() {
-    const employees = await db.Employee.findAll({
-        include: [
+    // ✅ Fetch requests for a specific employee
+    async function getByEmployeeId(employeeId) {
+        const requests = await db.Request.findAll({
+            where: { employeeId },
+            include: [
             {
-                model: db.Account,
-                as: 'account',
-                attributes: ['id', 'email', 'status'],
-                where: { status: 'Active' }
+                model: db.Employee,
+                as: 'employee',
+                attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
+                include: [
+                { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
+                { model: db.Department, as: 'department', attributes: ['name'] },
+                { model: db.Position, as: 'position', attributes: ['name'] }
+                ]
             }
-        ],
-        order: [['employeeId', 'ASC']]
-    });
+            ],
+            order: [['id', 'ASC']]
+        });
+        return requests;
+    }
 
-    return employees.map(e => ({
-        id: e.id,
-        employeeId: e.employeeId,
-        account: e.account ? { id: e.account.id, email: e.account.email } : null
-    }));
-}
+    // ✅ Fetch all employees (active + inactive)
+    async function getAllEmployees() {
+        const employees = await db.Employee.findAll({
+            include: [
+                {
+                    model: db.Account,
+                    as: 'account',
+                    attributes: ['id', 'email', 'status']
+                }
+            ],
+            order: [['employeeId', 'ASC']]
+        });
 
-// ✅ Fetch requests for a specific employee
-async function getByEmployeeId(employeeId) {
-  const requests = await db.Request.findAll({
-    where: { employeeId },
-    include: [
-      {
-        model: db.Employee,
-        as: 'employee',
-        attributes: ['id', 'employeeId', 'positionId', 'departmentId', 'hireDate', 'status'],
-        include: [
-          { model: db.Account, as: 'account', attributes: ['id', 'email', 'status'] },
-          { model: db.Department, as: 'department', attributes: ['name'] },
-          { model: db.Position, as: 'position', attributes: ['name'] }
-        ]
-      }
-    ],
-    order: [['id', 'ASC']]
-  });
-
-  return requests;
-}
-
-// ✅ Fetch all employees (active + inactive)
-async function getAllEmployees() {
-    const employees = await db.Employee.findAll({
-        include: [
-            {
-                model: db.Account,
-                as: 'account',
-                attributes: ['id', 'email', 'status']
-            }
-        ],
-        order: [['employeeId', 'ASC']]
-    });
-
-    return employees.map(e => ({
-        id: e.id,
-        employeeId: e.employeeId,
-        account: e.account
-            ? { id: e.account.id, email: e.account.email, status: e.account.status }
-            : null
-    }));
-}
+        return employees.map(e => ({
+            id: e.id,
+            employeeId: e.employeeId,
+            account: e.account
+                ? { id: e.account.id, email: e.account.email, status: e.account.status }
+                : null
+        }));
+    }
