@@ -59,11 +59,17 @@
 }
 
     // ===== Route Handlers =====
-    function getAll(req, res, next) {
-        employeeService.getAll()
-            .then(employee => res.json(employee))
-            .catch(next);
+    async function getAll(req, res) {
+    const employees = await db.Employee.findAll({
+        include: [{
+        model: db.Account,
+        as: 'account',
+        attributes: ['id', 'email', 'firstName', 'lastName', 'role']
+        }]
+    });
+    res.json(employees);
     }
+
 
     function getById(req, res, next) {
         employeeService.getById(req.params.id)

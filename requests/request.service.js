@@ -95,7 +95,7 @@ module.exports = {
 // }
 
     // ✅ Update request with full debug logging
-async function update(id, params) {
+    async function update(id, params) {
     console.log('🟡 Incoming update request:', { id, params });
 
     const request = await getById(id);
@@ -148,7 +148,7 @@ async function update(id, params) {
             if (!oldItem && newItem) changes.push(`Added new item "${newItem}"`);
             else if (oldItem && !newItem) changes.push(`Removed item "${oldItem}"`);
             else if (oldItem && newItem && oldItem !== newItem)
-                changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
+            changes.push(`Updated item from "${oldItem}" → "${newItem}"`);
         }
     }
 
