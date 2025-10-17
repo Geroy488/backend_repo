@@ -6,6 +6,7 @@
     const authorize = require('_middleware/authorize');
     const Role = require('_helpers/role');
     const employeeService = require('./employee.service');
+    const db = require('../_helpers/db');
 
     // routes
     router.get('/', /* authorize(Role.Admin), */ getAll);
@@ -59,16 +60,15 @@
 }
 
     // ===== Route Handlers =====
-    async function getAll(req, res) {
-    const employees = await db.Employee.findAll({
-        include: [{
-        model: db.Account,
-        as: 'account',
-        attributes: ['id', 'email', 'firstName', 'lastName', 'role']
-        }]
-    });
-    res.json(employees);
+        async function getAll(req, res, next) {
+        try {
+            const employees = await employeeService.getAll();
+            res.json(employees);
+        } catch (err) {
+            next(err);
+        }
     }
+
 
 
     function getById(req, res, next) {

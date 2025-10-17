@@ -34,6 +34,7 @@ async function getAll() {
     account: emp.account ? {
       id: emp.account.id,
       email: emp.account.email,
+      name: `${emp.account.firstName || ''} ${emp.account.lastName || ''}`.trim(),
       status: emp.account.status
     } : null,
     employeeId: emp.employeeId,
@@ -51,7 +52,7 @@ async function getById(id) {
   const emp = await db.Employee.findOne({
     where: { employeeId: id },
     include: [
-      { model: db.Account, as: 'account', attributes: ['id','email','status'] },
+      { model: db.Account, as: 'account', attributes: ['id','email','firstName','lastName','status'] },
       { model: db.Department, as: 'department', attributes: ['id','name'] },
       { model: db.Position, as: 'position', attributes: ['id','name'] }
     ]
