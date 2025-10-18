@@ -10,11 +10,12 @@
 
     // routes
     router.get('/', /* authorize(Role.Admin), */ getAll);
-    router.get('/next-id', getNextEmployeeId);  // ✅ put here
+    router.get('/approvers', getApprovers);
+    router.get('/next-id', getNextEmployeeId); 
     router.get('/:id', authorize(), getById);
     router.post('/', authorize(Role.Admin), createSchema, create);
     router.put('/:id', authorize(Role.Admin), updateSchema, update);
-    router.delete('/:id', authorize(Role.Admin), _delete);
+   // router.delete('/:id', authorize(Role.Admin), _delete);
     
     console.log("✅ Employees controller loaded");
 
@@ -68,8 +69,39 @@
             next(err);
         }
     }
+ 
+        // GET /employees/approvers
+        async function getApprovers(req, res, next) {
+        try {
+            const approvers = await db.Employee.findAll({
+            include: [
+                {
+                model: db.Position,
+                as: 'position',
+                attributes: ['name'],
+                where: {
+                    name: {
+                    [db.Sequelize.Op.or]: [
+                        { [db.Sequelize.Op.like]: '%Head%' },
+                        { [db.Sequelize.Op.like]: '%Manager%' }
+                    ]
+                    }
+                }
+                },
+                {
+                model: db.Account,
+                as: 'account',
+                attributes: ['firstName', 'lastName', 'email']
+                }
+            ],
+            attributes: ['id', 'employeeId']
+            });
 
-
+            res.json(approvers);
+        } catch (err) {
+            next(err);
+        }
+        }
 
     function getById(req, res, next) {
         employeeService.getById(req.params.id)

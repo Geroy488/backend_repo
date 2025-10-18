@@ -10,7 +10,8 @@ module.exports = {
   create,
   update,
   getNextEmployeeId,
-  getByEmployeeId
+  getByEmployeeId,
+  getApprovers
 };
 
 // ======================
@@ -230,4 +231,32 @@ async function update(id, params) {
     position: updatedEmployee.position ? updatedEmployee.position.name : null,
     positionId: updatedEmployee.position ? updatedEmployee.position.id : null
   };
+}
+
+async function getApprovers() {
+  const approvers = await db.Employee.findAll({
+    include: [
+      {
+        model: db.Position,
+        as: 'position',
+        attributes: ['name'],
+        where: {
+          name: {
+            [db.Sequelize.Op.or]: [
+              { [db.Sequelize.Op.like]: '%Head%' },
+              { [db.Sequelize.Op.like]: '%Manager%' }
+            ]
+          }
+        }
+      },
+      {
+        model: db.Account,
+        as: 'account',
+        attributes: ['firstName', 'lastName', 'email']
+      }
+    ],
+    attributes: ['id', 'employeeId']
+  });
+
+  return approvers;
 }
